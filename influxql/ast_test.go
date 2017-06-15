@@ -1739,6 +1739,7 @@ func Test_EnforceHasDefaultDatabase(t *testing.T) {
 		"DropSeriesStatement",
 		"DropShardStatement",
 		"DropUserStatement",
+		"ExplainStatement",
 		"GrantAdminStatement",
 		"KillQueryStatement",
 		"RevokeAdminStatement",
