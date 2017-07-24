@@ -1772,96 +1772,6 @@ func (s *SelectStatement) HasDimensionWildcard() bool {
 	return false
 }
 
-func (s *SelectStatement) validate(tr targetRequirement) error {
-	//	if err := s.validateFields(); err != nil {
-	//		return err
-	//	}
-	//
-	//	if err := s.validateDimensions(); err != nil {
-	//		return err
-	//	}
-	//
-	//	if err := s.validateDistinct(); err != nil {
-	//		return err
-	//	}
-	//
-	//	if err := s.validateTopBottom(); err != nil {
-	//		return err
-	//	}
-	//
-	//	if err := s.validateAggregates(tr); err != nil {
-	//		return err
-	//	}
-	//
-	//	if err := s.validateFill(); err != nil {
-	//		return err
-	//	}
-	//
-	return nil
-}
-
-func (s *SelectStatement) validateFields() error {
-	ns := s.NamesInSelect()
-	if len(ns) == 1 && ns[0] == "time" {
-		return fmt.Errorf("at least 1 non-time field must be queried")
-	}
-
-	for _, f := range s.Fields {
-		switch expr := f.Expr.(type) {
-		case *BinaryExpr:
-			if err := expr.validate(); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-func (s *SelectStatement) validateDimensions() error {
-	var dur time.Duration
-	for _, dim := range s.Dimensions {
-		switch expr := dim.Expr.(type) {
-		case *Call:
-			// Ensure the call is time() and it has one or two duration arguments.
-			// If we already have a duration
-			if expr.Name != "time" {
-				return errors.New("only time() calls allowed in dimensions")
-			} else if got := len(expr.Args); got < 1 || got > 2 {
-				return errors.New("time dimension expected 1 or 2 arguments")
-			} else if lit, ok := expr.Args[0].(*DurationLiteral); !ok {
-				return errors.New("time dimension must have duration argument")
-			} else if dur != 0 {
-				return errors.New("multiple time dimensions not allowed")
-			} else {
-				dur = lit.Val
-				if len(expr.Args) == 2 {
-					switch lit := expr.Args[1].(type) {
-					case *DurationLiteral:
-						// noop
-					case *Call:
-						if lit.Name != "now" {
-							return errors.New("time dimension offset function must be now()")
-						} else if len(lit.Args) != 0 {
-							return errors.New("time dimension offset now() function requires no arguments")
-						}
-					default:
-						return errors.New("time dimension offset must be duration or now()")
-					}
-				}
-			}
-		case *VarRef:
-			if strings.ToLower(expr.Val) == "time" {
-				return errors.New("time() is a function and expects at least one argument")
-			}
-		case *Wildcard:
-		case *RegexLiteral:
-		default:
-			return errors.New("only time and tag dimensions allowed")
-		}
-	}
-	return nil
-}
-
 // validSelectWithAggregate determines if a SELECT statement has the correct
 // combination of aggregate functions combined with selected fields and tags
 // Currently we don't have support for all aggregates, but aggregates that
@@ -1905,54 +1815,6 @@ func (s *SelectStatement) validSelectWithAggregate() error {
 		return fmt.Errorf("mixing aggregate and non-aggregate queries is not supported")
 	}
 	return nil
-}
-
-// validTopBottomAggr determines if TOP or BOTTOM aggregates have valid arguments.
-func (s *SelectStatement) validTopBottomAggr(expr *Call) error {
-	if exp, got := 2, len(expr.Args); got < exp {
-		return fmt.Errorf("invalid number of arguments for %s, expected at least %d, got %d", expr.Name, exp, got)
-	}
-	if len(expr.Args) > 1 {
-		callLimit, ok := expr.Args[len(expr.Args)-1].(*IntegerLiteral)
-		if !ok {
-			return fmt.Errorf("expected integer as last argument in %s(), found %s", expr.Name, expr.Args[len(expr.Args)-1])
-		}
-		// Check if they asked for a limit smaller than what they passed into the call
-		if int64(callLimit.Val) > int64(s.Limit) && s.Limit != 0 {
-			return fmt.Errorf("limit (%d) in %s function can not be larger than the LIMIT (%d) in the select statement", int64(callLimit.Val), expr.Name, int64(s.Limit))
-		}
-
-		for _, v := range expr.Args[:len(expr.Args)-1] {
-			if _, ok := v.(*VarRef); !ok {
-				return fmt.Errorf("only fields or tags are allowed in %s(), found %s", expr.Name, v)
-			}
-		}
-	}
-	return nil
-}
-
-// validPercentileAggr determines if the call to PERCENTILE has valid arguments.
-func (s *SelectStatement) validPercentileAggr(expr *Call) error {
-	if err := s.validSelectWithAggregate(); err != nil {
-		return err
-	}
-	if exp, got := 2, len(expr.Args); got != exp {
-		return fmt.Errorf("invalid number of arguments for %s, expected %d, got %d", expr.Name, exp, got)
-	}
-
-	switch expr.Args[0].(type) {
-	case *VarRef, *RegexLiteral, *Wildcard:
-		// do nothing
-	default:
-		return fmt.Errorf("expected field argument in percentile()")
-	}
-
-	switch expr.Args[1].(type) {
-	case *IntegerLiteral, *NumberLiteral:
-		return nil
-	default:
-		return fmt.Errorf("expected float argument in percentile()")
-	}
 }
 
 // validPercentileAggr determines if the call to SAMPLE has valid arguments.
@@ -2028,14 +1890,6 @@ func (s *SelectStatement) validateAggregates(tr targetRequirement) error {
 					return fmt.Errorf("aggregate function required inside the call to %s", expr.Name)
 				} else if ok {
 					switch c.Name {
-					case "top", "bottom":
-						if err := s.validTopBottomAggr(c); err != nil {
-							return err
-						}
-					case "percentile":
-						if err := s.validPercentileAggr(c); err != nil {
-							return err
-						}
 					default:
 						if exp, got := 1, len(c.Args); got != exp {
 							return fmt.Errorf("invalid number of arguments for %s, expected %d, got %d", c.Name, exp, got)
@@ -2060,14 +1914,6 @@ func (s *SelectStatement) validateAggregates(tr targetRequirement) error {
 							return fmt.Errorf("expected field argument in %s()", c.Name)
 						}
 					}
-				}
-			case "top", "bottom":
-				if err := s.validTopBottomAggr(expr); err != nil {
-					return err
-				}
-			case "percentile":
-				if err := s.validPercentileAggr(expr); err != nil {
-					return err
 				}
 			case "sample":
 				if err := s.validSampleAggr(expr); err != nil {
@@ -2286,19 +2132,6 @@ func (s *SelectStatement) validateDistinct() error {
 
 		if len(c.Args) != 1 {
 			return fmt.Errorf("distinct function can only have one argument")
-		}
-	}
-	return nil
-}
-
-func (s *SelectStatement) validateTopBottom() error {
-	// Ensure there are not multiple calls if top/bottom is present.
-	info := newSelectInfo(s)
-	if len(info.calls) > 1 {
-		for call := range info.calls {
-			if call.Name == "top" || call.Name == "bottom" {
-				return fmt.Errorf("selector function %s() cannot be combined with other functions", call.Name)
-			}
 		}
 	}
 	return nil
@@ -3860,52 +3693,6 @@ type BinaryExpr struct {
 // String returns a string representation of the binary expression.
 func (e *BinaryExpr) String() string {
 	return fmt.Sprintf("%s %s %s", e.LHS.String(), e.Op.String(), e.RHS.String())
-}
-
-func (e *BinaryExpr) validate() error {
-	v := binaryExprValidator{}
-	Walk(&v, e)
-	if v.err != nil {
-		return v.err
-	} else if v.calls && v.refs {
-		return errors.New("binary expressions cannot mix aggregates and raw fields")
-	}
-	return nil
-}
-
-type binaryExprValidator struct {
-	calls bool
-	refs  bool
-	err   error
-}
-
-func (v *binaryExprValidator) Visit(n Node) Visitor {
-	if v.err != nil {
-		return nil
-	}
-
-	switch n := n.(type) {
-	case *Call:
-		v.calls = true
-
-		if n.Name == "top" || n.Name == "bottom" {
-			v.err = fmt.Errorf("cannot use %s() inside of a binary expression", n.Name)
-			return nil
-		}
-
-		for _, expr := range n.Args {
-			switch e := expr.(type) {
-			case *BinaryExpr:
-				v.err = e.validate()
-				return nil
-			}
-		}
-		return nil
-	case *VarRef:
-		v.refs = true
-		return nil
-	}
-	return v
 }
 
 // BinaryExprName returns the name of a binary expression by concatenating

@@ -431,6 +431,128 @@ func (c *FunctionCall) Execute(plan *Plan) error {
 	return nil
 }
 
+type Median struct {
+	Input  *ReadEdge
+	Output *WriteEdge
+}
+
+func (m *Median) Description() string {
+	return "median()"
+}
+
+func (m *Median) Inputs() []*ReadEdge   { return []*ReadEdge{m.Input} }
+func (m *Median) Outputs() []*WriteEdge { return []*WriteEdge{m.Output} }
+
+func (m *Median) Execute(plan *Plan) error {
+	if plan.DryRun {
+		m.Output.SetIterator(nil)
+		return nil
+	}
+	return errors.New("unimplemented")
+}
+
+type Mode struct {
+	Input  *ReadEdge
+	Output *WriteEdge
+}
+
+func (m *Mode) Description() string {
+	return "mode()"
+}
+
+func (m *Mode) Inputs() []*ReadEdge   { return []*ReadEdge{m.Input} }
+func (m *Mode) Outputs() []*WriteEdge { return []*WriteEdge{m.Output} }
+
+func (m *Mode) Execute(plan *Plan) error {
+	if plan.DryRun {
+		m.Output.SetIterator(nil)
+		return nil
+	}
+	return errors.New("unimplemented")
+}
+
+type Stddev struct {
+	Input  *ReadEdge
+	Output *WriteEdge
+}
+
+func (s *Stddev) Description() string {
+	return "stddev()"
+}
+
+func (s *Stddev) Inputs() []*ReadEdge   { return []*ReadEdge{s.Input} }
+func (s *Stddev) Outputs() []*WriteEdge { return []*WriteEdge{s.Output} }
+
+func (s *Stddev) Execute(plan *Plan) error {
+	if plan.DryRun {
+		s.Output.SetIterator(nil)
+		return nil
+	}
+	return errors.New("unimplemented")
+}
+
+type Spread struct {
+	Input  *ReadEdge
+	Output *WriteEdge
+}
+
+func (s *Spread) Description() string {
+	return "spread()"
+}
+
+func (s *Spread) Inputs() []*ReadEdge   { return []*ReadEdge{s.Input} }
+func (s *Spread) Outputs() []*WriteEdge { return []*WriteEdge{s.Output} }
+
+func (s *Spread) Execute(plan *Plan) error {
+	if plan.DryRun {
+		s.Output.SetIterator(nil)
+		return nil
+	}
+	return errors.New("unimplemented")
+}
+
+type Percentile struct {
+	Number float64
+	Input  *ReadEdge
+	Output *WriteEdge
+}
+
+func (p *Percentile) Description() string {
+	return fmt.Sprintf("percentile(%2.f)", p.Number)
+}
+
+func (p *Percentile) Inputs() []*ReadEdge   { return []*ReadEdge{p.Input} }
+func (p *Percentile) Outputs() []*WriteEdge { return []*WriteEdge{p.Output} }
+
+func (p *Percentile) Execute(plan *Plan) error {
+	if plan.DryRun {
+		p.Output.SetIterator(nil)
+		return nil
+	}
+	return errors.New("unimplemented")
+}
+
+type Sample struct {
+	N      int
+	Input  *ReadEdge
+	Output *WriteEdge
+}
+
+func (s *Sample) Description() string {
+	return fmt.Sprintf("sample(%d)", s.N)
+}
+
+func (s *Sample) Inputs() []*ReadEdge   { return []*ReadEdge{s.Input} }
+func (s *Sample) Outputs() []*WriteEdge { return []*WriteEdge{s.Output} }
+
+func (s *Sample) Execute(plan *Plan) error {
+	if plan.DryRun {
+		s.Output.SetIterator(nil)
+		return nil
+	}
+	return errors.New("unimplemented")
+}
+
 type Distinct struct {
 	Input  *ReadEdge
 	Output *WriteEdge

@@ -36,6 +36,9 @@ type compiledStatement struct {
 	// Interval holds the time grouping interval.
 	Interval influxql.Interval
 
+	// Ascending is true if the time ordering is ascending.
+	Ascending bool
+
 	// FunctionCalls holds a reference to the read edge of all of the
 	// function calls that have been instantiated.
 	FunctionCalls []*ReadEdge
@@ -45,6 +48,9 @@ type compiledStatement struct {
 
 	// HasDistinct is set when the distinct() function is encountered.
 	HasDistinct bool
+
+	// FillOption contains the fill option for aggregates.
+	FillOption influxql.FillOption
 
 	// TopBottomFunction is set to top or bottom when one of those functions are
 	// used in the statement.
@@ -75,6 +81,7 @@ func newCompiler(stmt *influxql.SelectStatement, opt CompileOptions) *compiledSt
 		OnlySelectors: true,
 		Fields:        make([]*compiledField, 0, len(stmt.Fields)),
 		Tags:          make(map[string]struct{}),
+		Ascending:     true,
 		Options:       opt,
 	}
 }
@@ -140,15 +147,28 @@ func (c *compiledField) compileExpr(expr influxql.Expr, out *WriteEdge) error {
 		switch expr.Name {
 		case "count", "min", "max", "sum", "first", "last", "mean":
 			return c.compileFunction(expr, out)
+		case "median":
+			return c.compileMedian(expr.Args, out)
+		case "mode":
+			return c.compileMode(expr.Args, out)
+		case "stddev":
+			return c.compileStddev(expr.Args, out)
+		case "spread":
+			return c.compileSpread(expr.Args, out)
+		case "percentile":
+			return c.compilePercentile(expr.Args, out)
+		case "sample":
+			return c.compileSample(expr.Args, out)
 		case "distinct":
-			return c.compileDistinct(expr, out, false)
+			return c.compileDistinct(expr.Args, out, false)
 		case "top", "bottom":
 			return c.compileTopBottom(expr, out)
 		default:
 			return fmt.Errorf("undefined function %s()", expr.Name)
 		}
 	case *influxql.Distinct:
-		return c.compileDistinct(expr.NewCall(), out, false)
+		call := expr.NewCall()
+		return c.compileDistinct(call.Args, out, false)
 	case *influxql.BinaryExpr:
 		// Check if either side is a literal so we only compile one side if it is.
 		if _, ok := expr.LHS.(influxql.Literal); ok {
@@ -206,9 +226,10 @@ func (c *compiledField) compileFunction(expr *influxql.Call, out *WriteEdge) err
 	if expr.Name == "count" {
 		// If we have count(), the argument may be a distinct() call.
 		if arg0, ok := expr.Args[0].(*influxql.Call); ok && arg0.Name == "distinct" {
-			return c.compileDistinct(arg0, out, true)
+			return c.compileDistinct(arg0.Args, out, true)
 		} else if arg0, ok := expr.Args[0].(*influxql.Distinct); ok {
-			return c.compileDistinct(arg0.NewCall(), out, true)
+			call := arg0.NewCall()
+			return c.compileDistinct(call.Args, out, true)
 		}
 	}
 
@@ -226,6 +247,174 @@ func (c *compiledField) compileFunction(expr *influxql.Call, out *WriteEdge) err
 		return nil
 	default:
 		return fmt.Errorf("expected field argument in %s()", expr.Name)
+	}
+}
+
+func (c *compiledField) compileMedian(args []influxql.Expr, out *WriteEdge) error {
+	if exp, got := 1, len(args); exp != got {
+		return fmt.Errorf("invalid number of arguments for median, expected %d, got %d", exp, got)
+	}
+
+	m := &Median{Output: out}
+	out, m.Input = AddEdge(nil, m)
+
+	// Must be a variable reference, wildcard, or regexp.
+	switch arg0 := args[0].(type) {
+	case *influxql.VarRef:
+		return c.compileVarRef(arg0, out)
+	case *influxql.Wildcard:
+		c.wildcardFunction("median")
+		c.Symbols.Table[out] = &WildcardSymbol{}
+		return nil
+	case *influxql.RegexLiteral:
+		c.wildcardFunctionFilter("median", arg0.Val)
+		c.Symbols.Table[out] = &WildcardSymbol{}
+		return nil
+	default:
+		return errors.New("expected field argument in median()")
+	}
+}
+
+func (c *compiledField) compileMode(args []influxql.Expr, out *WriteEdge) error {
+	if exp, got := 1, len(args); exp != got {
+		return fmt.Errorf("invalid number of arguments for mode, expected %d, got %d", exp, got)
+	}
+
+	m := &Mode{Output: out}
+	out, m.Input = AddEdge(nil, m)
+
+	// Must be a variable reference, wildcard, or regexp.
+	switch arg0 := args[0].(type) {
+	case *influxql.VarRef:
+		return c.compileVarRef(arg0, out)
+	case *influxql.Wildcard:
+		c.wildcardFunction("mode")
+		c.Symbols.Table[out] = &WildcardSymbol{}
+		return nil
+	case *influxql.RegexLiteral:
+		c.wildcardFunctionFilter("mode", arg0.Val)
+		c.Symbols.Table[out] = &WildcardSymbol{}
+		return nil
+	default:
+		return errors.New("expected field argument in mode()")
+	}
+}
+
+func (c *compiledField) compileStddev(args []influxql.Expr, out *WriteEdge) error {
+	if exp, got := 1, len(args); exp != got {
+		return fmt.Errorf("invalid number of arguments for stddev, expected %d, got %d", exp, got)
+	}
+
+	s := &Stddev{Output: out}
+	out, s.Input = AddEdge(nil, s)
+
+	// Must be a variable reference, wildcard, or regexp.
+	switch arg0 := args[0].(type) {
+	case *influxql.VarRef:
+		return c.compileVarRef(arg0, out)
+	case *influxql.Wildcard:
+		c.wildcardFunction("stddev")
+		c.Symbols.Table[out] = &WildcardSymbol{}
+		return nil
+	case *influxql.RegexLiteral:
+		c.wildcardFunctionFilter("stddev", arg0.Val)
+		c.Symbols.Table[out] = &WildcardSymbol{}
+		return nil
+	default:
+		return errors.New("expected field argument in stddev()")
+	}
+}
+
+func (c *compiledField) compileSpread(args []influxql.Expr, out *WriteEdge) error {
+	if exp, got := 1, len(args); exp != got {
+		return fmt.Errorf("invalid number of arguments for spread, expected %d, got %d", exp, got)
+	}
+
+	s := &Spread{Output: out}
+	out, s.Input = AddEdge(nil, s)
+
+	// Must be a variable reference, wildcard, or regexp.
+	switch arg0 := args[0].(type) {
+	case *influxql.VarRef:
+		return c.compileVarRef(arg0, out)
+	case *influxql.Wildcard:
+		c.wildcardFunction("spread")
+		c.Symbols.Table[out] = &WildcardSymbol{}
+		return nil
+	case *influxql.RegexLiteral:
+		c.wildcardFunctionFilter("spread", arg0.Val)
+		c.Symbols.Table[out] = &WildcardSymbol{}
+		return nil
+	default:
+		return errors.New("expected field argument in spread()")
+	}
+}
+
+func (c *compiledField) compilePercentile(args []influxql.Expr, out *WriteEdge) error {
+	if exp, got := 2, len(args); got != exp {
+		return fmt.Errorf("invalid number of arguments for percentile, expected %d, got %d", exp, got)
+	}
+
+	var percentile float64
+	switch lit := args[1].(type) {
+	case *influxql.IntegerLiteral:
+		percentile = float64(lit.Val)
+	case *influxql.NumberLiteral:
+		percentile = lit.Val
+	default:
+		return fmt.Errorf("expected float argument in percentile()")
+	}
+
+	p := &Percentile{Number: percentile, Output: out}
+	out, p.Input = AddEdge(nil, p)
+
+	// Must be a variable reference, wildcard, or regexp.
+	switch arg0 := args[0].(type) {
+	case *influxql.VarRef:
+		return c.compileVarRef(arg0, out)
+	case *influxql.Wildcard:
+		c.wildcardFunction("percentile")
+		c.Symbols.Table[out] = &WildcardSymbol{}
+		return nil
+	case *influxql.RegexLiteral:
+		c.wildcardFunctionFilter("percentile", arg0.Val)
+		c.Symbols.Table[out] = &WildcardSymbol{}
+		return nil
+	default:
+		return errors.New("expected field argument in percentile()")
+	}
+}
+
+func (c *compiledField) compileSample(args []influxql.Expr, out *WriteEdge) error {
+	if exp, got := 2, len(args); got != exp {
+		return fmt.Errorf("invalid number of arguments for sample, expected %d, got %d", exp, got)
+	}
+
+	var n int
+	switch lit := args[1].(type) {
+	case *influxql.IntegerLiteral:
+		n = int(lit.Val)
+	default:
+		return fmt.Errorf("expected integer argument in sample()")
+	}
+
+	s := &Sample{N: n, Output: out}
+	out, s.Input = AddEdge(nil, s)
+
+	// Must be a variable reference, wildcard, or regexp.
+	switch arg0 := args[0].(type) {
+	case *influxql.VarRef:
+		return c.compileVarRef(arg0, out)
+	case *influxql.Wildcard:
+		c.wildcardFunction("sample")
+		c.Symbols.Table[out] = &WildcardSymbol{}
+		return nil
+	case *influxql.RegexLiteral:
+		c.wildcardFunctionFilter("sample", arg0.Val)
+		c.Symbols.Table[out] = &WildcardSymbol{}
+		return nil
+	default:
+		return errors.New("expected field argument in percentile()")
 	}
 }
 
@@ -261,14 +450,14 @@ func (c *compiledStatement) linkAuxiliaryFields() {
 	}
 }
 
-func (c *compiledField) compileDistinct(call *influxql.Call, out *WriteEdge, nested bool) error {
-	if len(call.Args) == 0 {
+func (c *compiledField) compileDistinct(args []influxql.Expr, out *WriteEdge, nested bool) error {
+	if len(args) == 0 {
 		return errors.New("distinct function requires at least one argument")
-	} else if len(call.Args) != 1 {
+	} else if len(args) != 1 {
 		return errors.New("distinct function can only have one argument")
 	}
 
-	arg0, ok := call.Args[0].(*influxql.VarRef)
+	arg0, ok := args[0].(*influxql.VarRef)
 	if !ok {
 		return errors.New("expected field argument in distinct()")
 	}
@@ -296,9 +485,16 @@ func (c *compiledField) compileTopBottom(call *influxql.Call, out *WriteEdge) er
 		return fmt.Errorf("invalid number of arguments for %s, expected at least %d, got %d", call.Name, exp, got)
 	}
 
+	limit, ok := call.Args[len(call.Args)-1].(*influxql.IntegerLiteral)
+	if !ok {
+		return fmt.Errorf("expected integer as last argument in %s(), found %s", call.Name, call.Args[len(call.Args)-1])
+	} else if limit.Val <= 0 {
+		return fmt.Errorf("limit (%d) in %s function must be at least 1", limit.Val, call.Name)
+	}
+
 	ref, ok := call.Args[0].(*influxql.VarRef)
 	if !ok {
-		return fmt.Errorf("expected field argument in %s()", call.Name)
+		return fmt.Errorf("expected first argument to be a field in %s(), found %s", call.Name, call.Args[0])
 	}
 
 	var dimensions []influxql.VarRef
@@ -327,13 +523,6 @@ func (c *compiledField) compileTopBottom(call *influxql.Call, out *WriteEdge) er
 				return err
 			}
 		}
-	}
-
-	limit, ok := call.Args[len(call.Args)-1].(*influxql.IntegerLiteral)
-	if !ok {
-		return fmt.Errorf("expected integer as last argument in %s(), found %s", call.Name, call.Args[len(call.Args)-1])
-	} else if limit.Val <= 0 {
-		return fmt.Errorf("limit (%d) in %s function must be at least 1", limit.Val, call.Name)
 	}
 	c.global.TopBottomFunction = call.Name
 
@@ -434,9 +623,19 @@ func (c *compiledStatement) validateFields() error {
 	// Ensure there are not multiple calls if top/bottom is present.
 	if len(c.FunctionCalls) > 1 && c.TopBottomFunction != "" {
 		return fmt.Errorf("selector function %s() cannot be combined with other functions", c.TopBottomFunction)
+	} else if len(c.FunctionCalls) == 0 {
+		switch c.FillOption {
+		case influxql.NoFill:
+			return errors.New("fill(none) must be used with a function")
+		case influxql.LinearFill:
+			return errors.New("fill(linear) must be used with a function")
+		}
+		if !c.Interval.IsZero() {
+			return errors.New("GROUP BY requires at least one aggregate function")
+		}
 	}
 	// If a distinct() call is present, ensure there is exactly one function.
-	if c.HasDistinct && len(c.FunctionCalls) != 1 {
+	if c.HasDistinct && (len(c.FunctionCalls) != 1 || c.AuxiliaryFields != nil) {
 		return errors.New("aggregate function distinct() cannot be combined with other functions or fields")
 	}
 	// Validate we are using a selector or raw query if auxiliary fields are required.
@@ -450,10 +649,23 @@ func (c *compiledStatement) validateFields() error {
 	return nil
 }
 
+// validateDimensions validates that the dimensions are appropriate for this type of query.
+func (c *compiledStatement) validateDimensions() error {
+	if !c.Interval.IsZero() {
+		// There must be a lower limit that wasn't implicitly set.
+		if c.TimeRange.Min.UnixNano() == influxql.MinTime {
+			return errors.New("aggregate functions with GROUP BY time require a WHERE time clause with a lower limit")
+		}
+	}
+	return nil
+}
+
 func Compile(stmt *influxql.SelectStatement, opt CompileOptions) (CompiledStatement, error) {
 	// Compile each of the expressions.
 	c := newCompiler(stmt, opt)
 	c.Sources = append(c.Sources, stmt.Sources...)
+	c.FillOption = stmt.Fill
+	c.Ascending = stmt.TimeAscending()
 
 	// Retrieve the condition expression and the time range.
 	valuer := influxql.NowValuer{Now: c.Options.Now}
@@ -467,53 +679,8 @@ func Compile(stmt *influxql.SelectStatement, opt CompileOptions) (CompiledStatem
 	}
 
 	// Read the dimensions of the query and retrieve the interval if it exists.
-	c.Dimensions = make([]string, 0, len(stmt.Dimensions))
-	for _, d := range stmt.Dimensions {
-		switch expr := d.Expr.(type) {
-		case *influxql.VarRef:
-			if strings.ToLower(expr.Val) == "time" {
-				return nil, errors.New("time() is a function and expects at least one argument")
-			}
-			c.Dimensions = append(c.Dimensions, expr.Val)
-		case *influxql.Call:
-			// Ensure the call is time() and it has one or two duration arguments.
-			// If we already have a duration
-			if expr.Name != "time" {
-				return nil, errors.New("only time() calls allowed in dimensions")
-			} else if got := len(expr.Args); got < 1 || got > 2 {
-				return nil, errors.New("time dimension expected 1 or 2 arguments")
-			} else if lit, ok := expr.Args[0].(*influxql.DurationLiteral); !ok {
-				return nil, errors.New("time dimension must have duration argument")
-			} else if c.Interval.Duration != 0 {
-				return nil, errors.New("multiple time dimensions not allowed")
-			} else {
-				c.Interval.Duration = lit.Val
-				if len(expr.Args) == 2 {
-					switch lit := expr.Args[1].(type) {
-					case *influxql.DurationLiteral:
-						c.Interval.Offset = lit.Val % c.Interval.Duration
-					case *influxql.TimeLiteral:
-						c.Interval.Offset = lit.Val.Sub(lit.Val.Truncate(c.Interval.Duration))
-					case *influxql.Call:
-						if lit.Name != "now" {
-							return nil, errors.New("time dimension offset function must be now()")
-						} else if len(lit.Args) != 0 {
-							return nil, errors.New("time dimension offset now() function requires no arguments")
-						}
-						now := c.Options.Now
-						c.Interval.Offset = now.Sub(now.Truncate(c.Interval.Duration))
-					default:
-						return nil, errors.New("time dimension offset must be duration or now()")
-					}
-				}
-			}
-		case *influxql.Wildcard:
-			return nil, errors.New("unimplemented")
-		case *influxql.RegexLiteral:
-			return nil, errors.New("unimplemented")
-		default:
-			return nil, errors.New("only time and tag dimensions allowed")
-		}
+	if err := c.compileDimensions(stmt); err != nil {
+		return nil, err
 	}
 
 	// Resolve the min and max times now that we know if there is an interval or not.
@@ -554,7 +721,65 @@ func Compile(stmt *influxql.SelectStatement, opt CompileOptions) (CompiledStatem
 	if err := c.validateFields(); err != nil {
 		return nil, err
 	}
+	if err := c.validateDimensions(); err != nil {
+		return nil, err
+	}
 	return c, nil
+}
+
+// compileDimensions parses the dimensions and interval information from the
+// SelectStatement. This sets the Dimensions and Interval for the compiledStatement
+// and returns an error if it failed for some reason.
+func (c *compiledStatement) compileDimensions(stmt *influxql.SelectStatement) error {
+	c.Dimensions = make([]string, 0, len(stmt.Dimensions))
+	for _, d := range stmt.Dimensions {
+		switch expr := d.Expr.(type) {
+		case *influxql.VarRef:
+			if strings.ToLower(expr.Val) == "time" {
+				return errors.New("time() is a function and expects at least one argument")
+			}
+			c.Dimensions = append(c.Dimensions, expr.Val)
+		case *influxql.Call:
+			// Ensure the call is time() and it has one or two duration arguments.
+			// If we already have a duration
+			if expr.Name != "time" {
+				return errors.New("only time() calls allowed in dimensions")
+			} else if got := len(expr.Args); got < 1 || got > 2 {
+				return errors.New("time dimension expected 1 or 2 arguments")
+			} else if lit, ok := expr.Args[0].(*influxql.DurationLiteral); !ok {
+				return errors.New("time dimension must have duration argument")
+			} else if c.Interval.Duration != 0 {
+				return errors.New("multiple time dimensions not allowed")
+			} else {
+				c.Interval.Duration = lit.Val
+				if len(expr.Args) == 2 {
+					switch lit := expr.Args[1].(type) {
+					case *influxql.DurationLiteral:
+						c.Interval.Offset = lit.Val % c.Interval.Duration
+					case *influxql.TimeLiteral:
+						c.Interval.Offset = lit.Val.Sub(lit.Val.Truncate(c.Interval.Duration))
+					case *influxql.Call:
+						if lit.Name != "now" {
+							return errors.New("time dimension offset function must be now()")
+						} else if len(lit.Args) != 0 {
+							return errors.New("time dimension offset now() function requires no arguments")
+						}
+						now := c.Options.Now
+						c.Interval.Offset = now.Sub(now.Truncate(c.Interval.Duration))
+					default:
+						return errors.New("time dimension offset must be duration or now()")
+					}
+				}
+			}
+		case *influxql.Wildcard:
+			return errors.New("unimplemented")
+		case *influxql.RegexLiteral:
+			return errors.New("unimplemented")
+		default:
+			return errors.New("only time and tag dimensions allowed")
+		}
+	}
+	return nil
 }
 
 // TimeRange represents a range of time from Min to Max. The times are inclusive.
