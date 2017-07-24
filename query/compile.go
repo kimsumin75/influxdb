@@ -198,6 +198,8 @@ func (c *compiledField) compileExpr(expr influxql.Expr, out *WriteEdge) error {
 			}
 			return nil
 		}
+	case *influxql.ParenExpr:
+		return c.compileExpr(expr.Expr, out)
 	}
 	return errors.New("unimplemented")
 }
@@ -362,9 +364,9 @@ func (c *compiledField) compileDerivative(args []influxql.Expr, isNonNegative bo
 	switch arg0 := args[0].(type) {
 	case *influxql.Call:
 		if c.global.Interval.IsZero() {
-			return fmt.Errorf("%s aggregate requires a GROUP BY interval", arg0.Name)
+			return fmt.Errorf("%s aggregate requires a GROUP BY interval", name)
 		}
-		return c.compileFunction(arg0, out)
+		return c.compileExpr(arg0, out)
 	default:
 		if !c.global.Interval.IsZero() {
 			return fmt.Errorf("aggregate function required inside the call to %s", name)
@@ -407,7 +409,7 @@ func (c *compiledField) compileElapsed(args []influxql.Expr, out *WriteEdge) err
 		if c.global.Interval.IsZero() {
 			return fmt.Errorf("%s aggregate requires a GROUP BY interval", arg0.Name)
 		}
-		return c.compileFunction(arg0, out)
+		return c.compileExpr(arg0, out)
 	default:
 		if !c.global.Interval.IsZero() {
 			return fmt.Errorf("aggregate function required inside the call to elapsed")
@@ -439,9 +441,9 @@ func (c *compiledField) compileDifference(args []influxql.Expr, isNonNegative bo
 	switch arg0 := args[0].(type) {
 	case *influxql.Call:
 		if c.global.Interval.IsZero() {
-			return fmt.Errorf("%s aggregate requires a GROUP BY interval", arg0.Name)
+			return fmt.Errorf("%s aggregate requires a GROUP BY interval", name)
 		}
-		return c.compileFunction(arg0, out)
+		return c.compileExpr(arg0, out)
 	default:
 		if !c.global.Interval.IsZero() {
 			return fmt.Errorf("aggregate function required inside the call to %s", name)
@@ -465,9 +467,9 @@ func (c *compiledField) compileCumulativeSum(args []influxql.Expr, out *WriteEdg
 	switch arg0 := args[0].(type) {
 	case *influxql.Call:
 		if c.global.Interval.IsZero() {
-			return fmt.Errorf("%s aggregate requires a GROUP BY interval", arg0.Name)
+			return fmt.Errorf("cumulative_sum aggregate requires a GROUP BY interval")
 		}
-		return c.compileFunction(arg0, out)
+		return c.compileExpr(arg0, out)
 	default:
 		if !c.global.Interval.IsZero() {
 			return fmt.Errorf("aggregate function required inside the call to cumulative_sum")
@@ -507,9 +509,9 @@ func (c *compiledField) compileMovingAverage(args []influxql.Expr, out *WriteEdg
 	switch arg0 := args[0].(type) {
 	case *influxql.Call:
 		if c.global.Interval.IsZero() {
-			return fmt.Errorf("%s aggregate requires a GROUP BY interval", arg0.Name)
+			return fmt.Errorf("moving_average aggregate requires a GROUP BY interval")
 		}
-		return c.compileFunction(arg0, out)
+		return c.compileExpr(arg0, out)
 	default:
 		if !c.global.Interval.IsZero() {
 			return fmt.Errorf("aggregate function required inside the call to moving_average")

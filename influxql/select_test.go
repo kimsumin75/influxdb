@@ -2268,12 +2268,12 @@ func TestSelect_BinaryExpr_Float(t *testing.T) {
 			},
 		},
 	} {
-		stmt, err := MustParseSelectStatement(test.Statement).RewriteFields(&ic)
+		stmt, err := influxql.ParseStatement(test.Statement)
 		if err != nil {
 			t.Errorf("%s: rewrite error: %s", test.Name, err)
 		}
 
-		itrs, err := influxql.Select(stmt, &ic, nil)
+		itrs, err := influxql.Select(stmt.(*influxql.SelectStatement), &ic, nil)
 		if err != nil {
 			t.Errorf("%s: parse error: %s", test.Name, err)
 		} else if a, err := Iterators(itrs).ReadAll(); err != nil {
@@ -2524,12 +2524,12 @@ func TestSelect_BinaryExpr_Integer(t *testing.T) {
 			},
 		},
 	} {
-		stmt, err := MustParseSelectStatement(test.Statement).RewriteFields(&ic)
+		stmt, err := influxql.ParseStatement(test.Statement)
 		if err != nil {
 			t.Errorf("%s: rewrite error: %s", test.Name, err)
 		}
 
-		itrs, err := influxql.Select(stmt, &ic, nil)
+		itrs, err := influxql.Select(stmt.(*influxql.SelectStatement), &ic, nil)
 		if err != nil {
 			t.Errorf("%s: parse error: %s", test.Name, err)
 		} else if a, err := Iterators(itrs).ReadAll(); err != nil {
@@ -2605,12 +2605,12 @@ func TestSelect_BinaryExpr_Mixed(t *testing.T) {
 			},
 		},
 	} {
-		stmt, err := MustParseSelectStatement(test.Statement).RewriteFields(&ic)
+		stmt, err := influxql.ParseStatement(test.Statement)
 		if err != nil {
 			t.Errorf("%s: rewrite error: %s", test.Name, err)
 		}
 
-		itrs, err := influxql.Select(stmt, &ic, nil)
+		itrs, err := influxql.Select(stmt.(*influxql.SelectStatement), &ic, nil)
 		if err != nil {
 			t.Errorf("%s: parse error: %s", test.Name, err)
 		} else if a, err := Iterators(itrs).ReadAll(); err != nil {
@@ -2684,12 +2684,12 @@ func TestSelect_BinaryExpr_Boolean(t *testing.T) {
 			},
 		},
 	} {
-		stmt, err := MustParseSelectStatement(test.Statement).RewriteFields(&ic)
+		stmt, err := influxql.ParseStatement(test.Statement)
 		if err != nil {
 			t.Errorf("%s: rewrite error: %s", test.Name, err)
 		}
 
-		itrs, err := influxql.Select(stmt, &ic, nil)
+		itrs, err := influxql.Select(stmt.(*influxql.SelectStatement), &ic, nil)
 		if err != nil {
 			t.Errorf("%s: parse error: %s", test.Name, err)
 		} else if a, err := Iterators(itrs).ReadAll(); err != nil {
@@ -2767,12 +2767,12 @@ func TestSelect_BinaryExpr_NilValues(t *testing.T) {
 			},
 		},
 	} {
-		stmt, err := MustParseSelectStatement(test.Statement).RewriteFields(&ic)
+		stmt, err := influxql.ParseStatement(test.Statement)
 		if err != nil {
 			t.Errorf("%s: rewrite error: %s", test.Name, err)
 		}
 
-		itrs, err := influxql.Select(stmt, &ic, nil)
+		itrs, err := influxql.Select(stmt.(*influxql.SelectStatement), &ic, nil)
 		if err != nil {
 			t.Errorf("%s: parse error: %s", test.Name, err)
 		} else if a, err := Iterators(itrs).ReadAll(); err != nil {
