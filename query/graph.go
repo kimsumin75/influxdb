@@ -553,6 +553,117 @@ func (s *Sample) Execute(plan *Plan) error {
 	return errors.New("unimplemented")
 }
 
+type Derivative struct {
+	Duration      time.Duration
+	IsNonNegative bool
+	Input         *ReadEdge
+	Output        *WriteEdge
+}
+
+func (d *Derivative) Description() string {
+	if d.IsNonNegative {
+		return fmt.Sprintf("non_negative_derivative(%s)", influxql.FormatDuration(d.Duration))
+	}
+	return fmt.Sprintf("derivative(%s)", influxql.FormatDuration(d.Duration))
+}
+
+func (d *Derivative) Inputs() []*ReadEdge   { return []*ReadEdge{d.Input} }
+func (d *Derivative) Outputs() []*WriteEdge { return []*WriteEdge{d.Output} }
+
+func (d *Derivative) Execute(plan *Plan) error {
+	if plan.DryRun {
+		d.Output.SetIterator(nil)
+		return nil
+	}
+	return errors.New("unimplemented")
+}
+
+type Elapsed struct {
+	Duration time.Duration
+	Input    *ReadEdge
+	Output   *WriteEdge
+}
+
+func (e *Elapsed) Description() string {
+	return fmt.Sprintf("elapsed(%s)", influxql.FormatDuration(e.Duration))
+}
+
+func (e *Elapsed) Inputs() []*ReadEdge   { return []*ReadEdge{e.Input} }
+func (e *Elapsed) Outputs() []*WriteEdge { return []*WriteEdge{e.Output} }
+
+func (e *Elapsed) Execute(plan *Plan) error {
+	if plan.DryRun {
+		e.Output.SetIterator(nil)
+		return nil
+	}
+	return errors.New("unimplemented")
+}
+
+type Difference struct {
+	IsNonNegative bool
+	Input         *ReadEdge
+	Output        *WriteEdge
+}
+
+func (d *Difference) Description() string {
+	if d.IsNonNegative {
+		return "non_negative_difference()"
+	}
+	return "difference()"
+}
+
+func (d *Difference) Inputs() []*ReadEdge   { return []*ReadEdge{d.Input} }
+func (d *Difference) Outputs() []*WriteEdge { return []*WriteEdge{d.Output} }
+
+func (d *Difference) Execute(plan *Plan) error {
+	if plan.DryRun {
+		d.Output.SetIterator(nil)
+		return nil
+	}
+	return errors.New("unimplemented")
+}
+
+type MovingAverage struct {
+	WindowSize int
+	Input      *ReadEdge
+	Output     *WriteEdge
+}
+
+func (m *MovingAverage) Description() string {
+	return fmt.Sprintf("moving_average(%d)", m.WindowSize)
+}
+
+func (m *MovingAverage) Inputs() []*ReadEdge   { return []*ReadEdge{m.Input} }
+func (m *MovingAverage) Outputs() []*WriteEdge { return []*WriteEdge{m.Output} }
+
+func (m *MovingAverage) Execute(plan *Plan) error {
+	if plan.DryRun {
+		m.Output.SetIterator(nil)
+		return nil
+	}
+	return errors.New("unimplemented")
+}
+
+type CumulativeSum struct {
+	Input  *ReadEdge
+	Output *WriteEdge
+}
+
+func (c *CumulativeSum) Description() string {
+	return "cumulative_sum()"
+}
+
+func (c *CumulativeSum) Inputs() []*ReadEdge   { return []*ReadEdge{c.Input} }
+func (c *CumulativeSum) Outputs() []*WriteEdge { return []*WriteEdge{c.Output} }
+
+func (c *CumulativeSum) Execute(plan *Plan) error {
+	if plan.DryRun {
+		c.Output.SetIterator(nil)
+		return nil
+	}
+	return errors.New("unimplemented")
+}
+
 type Distinct struct {
 	Input  *ReadEdge
 	Output *WriteEdge

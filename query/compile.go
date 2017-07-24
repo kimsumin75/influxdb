@@ -145,16 +145,6 @@ func (c *compiledField) compileExpr(expr influxql.Expr, out *WriteEdge) error {
 		return nil
 	case *influxql.Call:
 		switch expr.Name {
-		case "count", "min", "max", "sum", "first", "last", "mean":
-			return c.compileFunction(expr, out)
-		case "median":
-			return c.compileMedian(expr.Args, out)
-		case "mode":
-			return c.compileMode(expr.Args, out)
-		case "stddev":
-			return c.compileStddev(expr.Args, out)
-		case "spread":
-			return c.compileSpread(expr.Args, out)
 		case "percentile":
 			return c.compilePercentile(expr.Args, out)
 		case "sample":
@@ -163,8 +153,18 @@ func (c *compiledField) compileExpr(expr influxql.Expr, out *WriteEdge) error {
 			return c.compileDistinct(expr.Args, out, false)
 		case "top", "bottom":
 			return c.compileTopBottom(expr, out)
+		case "derivative", "non_negative_derivative":
+			isNonNegative := expr.Name == "non_negative_derivative"
+			return c.compileDerivative(expr.Args, isNonNegative, out)
+		case "difference", "non_negative_difference":
+			isNonNegative := expr.Name == "non_negative_difference"
+			return c.compileDifference(expr.Args, isNonNegative, out)
+		case "cumulative_sum":
+			return c.compileCumulativeSum(expr.Args, out)
+		case "moving_average":
+			return c.compileMovingAverage(expr.Args, out)
 		default:
-			return fmt.Errorf("undefined function %s()", expr.Name)
+			return c.compileFunction(expr, out)
 		}
 	case *influxql.Distinct:
 		call := expr.NewCall()
@@ -197,26 +197,65 @@ func (c *compiledField) compileExpr(expr influxql.Expr, out *WriteEdge) error {
 	return errors.New("unimplemented")
 }
 
+func (c *compiledField) compileSymbol(name string, field influxql.Expr, out *WriteEdge) error {
+	// Must be a variable reference, wildcard, or regexp.
+	switch arg0 := field.(type) {
+	case *influxql.VarRef:
+		return c.compileVarRef(arg0, out)
+	case *influxql.Wildcard:
+		c.wildcardFunction(name)
+		c.Symbols.Table[out] = &WildcardSymbol{}
+		return nil
+	case *influxql.RegexLiteral:
+		c.wildcardFunctionFilter(name, arg0.Val)
+		c.Symbols.Table[out] = &WildcardSymbol{}
+		return nil
+	default:
+		return fmt.Errorf("expected field argument in %s()", name)
+	}
+}
+
 func (c *compiledField) compileFunction(expr *influxql.Call, out *WriteEdge) error {
+	// Create the function call and send its output to the write edge.
+	c.global.FunctionCalls = append(c.global.FunctionCalls, out.Output)
+	switch expr.Name {
+	case "count", "min", "max", "sum", "first", "last", "mean":
+		call := &FunctionCall{
+			Name:       expr.Name,
+			Dimensions: c.global.Dimensions,
+			Interval:   c.global.Interval,
+			TimeRange:  c.global.TimeRange,
+			Output:     out,
+		}
+		out.Node = call
+		out, call.Input = AddEdge(nil, call)
+	case "median":
+		median := &Median{Output: out}
+		out.Node = median
+		out, median.Input = AddEdge(nil, median)
+	case "mode":
+		mode := &Mode{Output: out}
+		out.Node = mode
+		out, mode.Input = AddEdge(nil, mode)
+	case "stddev":
+		stddev := &Stddev{Output: out}
+		out.Node = stddev
+		out, stddev.Input = AddEdge(nil, stddev)
+	case "spread":
+		spread := &Spread{Output: out}
+		out.Node = spread
+		out, spread.Input = AddEdge(nil, spread)
+	default:
+		return fmt.Errorf("undefined function %s()", expr.Name)
+	}
+
 	if exp, got := 1, len(expr.Args); exp != got {
 		return fmt.Errorf("invalid number of arguments for %s, expected %d, got %d", expr.Name, exp, got)
 	}
 
-	// Create the function call and send its output to the write edge.
-	call := &FunctionCall{
-		Name:       expr.Name,
-		Dimensions: c.global.Dimensions,
-		Interval:   c.global.Interval,
-		TimeRange:  c.global.TimeRange,
-		Output:     out,
-	}
-	c.global.FunctionCalls = append(c.global.FunctionCalls, out.Output)
-	out.Node = call
-	out, call.Input = AddEdge(nil, call)
-
 	// Mark down some meta properties related to the function for query validation.
 	switch expr.Name {
-	case "max", "min", "first", "last", "percentile", "sample":
+	case "max", "min", "first", "last":
 		// top/bottom are not included here since they are not typical functions.
 	default:
 		c.global.OnlySelectors = false
@@ -232,122 +271,7 @@ func (c *compiledField) compileFunction(expr *influxql.Call, out *WriteEdge) err
 			return c.compileDistinct(call.Args, out, true)
 		}
 	}
-
-	// Must be a variable reference, wildcard, or regexp.
-	switch arg0 := expr.Args[0].(type) {
-	case *influxql.VarRef:
-		return c.compileVarRef(arg0, out)
-	case *influxql.Wildcard:
-		c.wildcardFunction(expr.Name)
-		c.Symbols.Table[out] = &WildcardSymbol{}
-		return nil
-	case *influxql.RegexLiteral:
-		c.wildcardFunctionFilter(expr.Name, arg0.Val)
-		c.Symbols.Table[out] = &WildcardSymbol{}
-		return nil
-	default:
-		return fmt.Errorf("expected field argument in %s()", expr.Name)
-	}
-}
-
-func (c *compiledField) compileMedian(args []influxql.Expr, out *WriteEdge) error {
-	if exp, got := 1, len(args); exp != got {
-		return fmt.Errorf("invalid number of arguments for median, expected %d, got %d", exp, got)
-	}
-
-	m := &Median{Output: out}
-	out, m.Input = AddEdge(nil, m)
-
-	// Must be a variable reference, wildcard, or regexp.
-	switch arg0 := args[0].(type) {
-	case *influxql.VarRef:
-		return c.compileVarRef(arg0, out)
-	case *influxql.Wildcard:
-		c.wildcardFunction("median")
-		c.Symbols.Table[out] = &WildcardSymbol{}
-		return nil
-	case *influxql.RegexLiteral:
-		c.wildcardFunctionFilter("median", arg0.Val)
-		c.Symbols.Table[out] = &WildcardSymbol{}
-		return nil
-	default:
-		return errors.New("expected field argument in median()")
-	}
-}
-
-func (c *compiledField) compileMode(args []influxql.Expr, out *WriteEdge) error {
-	if exp, got := 1, len(args); exp != got {
-		return fmt.Errorf("invalid number of arguments for mode, expected %d, got %d", exp, got)
-	}
-
-	m := &Mode{Output: out}
-	out, m.Input = AddEdge(nil, m)
-
-	// Must be a variable reference, wildcard, or regexp.
-	switch arg0 := args[0].(type) {
-	case *influxql.VarRef:
-		return c.compileVarRef(arg0, out)
-	case *influxql.Wildcard:
-		c.wildcardFunction("mode")
-		c.Symbols.Table[out] = &WildcardSymbol{}
-		return nil
-	case *influxql.RegexLiteral:
-		c.wildcardFunctionFilter("mode", arg0.Val)
-		c.Symbols.Table[out] = &WildcardSymbol{}
-		return nil
-	default:
-		return errors.New("expected field argument in mode()")
-	}
-}
-
-func (c *compiledField) compileStddev(args []influxql.Expr, out *WriteEdge) error {
-	if exp, got := 1, len(args); exp != got {
-		return fmt.Errorf("invalid number of arguments for stddev, expected %d, got %d", exp, got)
-	}
-
-	s := &Stddev{Output: out}
-	out, s.Input = AddEdge(nil, s)
-
-	// Must be a variable reference, wildcard, or regexp.
-	switch arg0 := args[0].(type) {
-	case *influxql.VarRef:
-		return c.compileVarRef(arg0, out)
-	case *influxql.Wildcard:
-		c.wildcardFunction("stddev")
-		c.Symbols.Table[out] = &WildcardSymbol{}
-		return nil
-	case *influxql.RegexLiteral:
-		c.wildcardFunctionFilter("stddev", arg0.Val)
-		c.Symbols.Table[out] = &WildcardSymbol{}
-		return nil
-	default:
-		return errors.New("expected field argument in stddev()")
-	}
-}
-
-func (c *compiledField) compileSpread(args []influxql.Expr, out *WriteEdge) error {
-	if exp, got := 1, len(args); exp != got {
-		return fmt.Errorf("invalid number of arguments for spread, expected %d, got %d", exp, got)
-	}
-
-	s := &Spread{Output: out}
-	out, s.Input = AddEdge(nil, s)
-
-	// Must be a variable reference, wildcard, or regexp.
-	switch arg0 := args[0].(type) {
-	case *influxql.VarRef:
-		return c.compileVarRef(arg0, out)
-	case *influxql.Wildcard:
-		c.wildcardFunction("spread")
-		c.Symbols.Table[out] = &WildcardSymbol{}
-		return nil
-	case *influxql.RegexLiteral:
-		c.wildcardFunctionFilter("spread", arg0.Val)
-		c.Symbols.Table[out] = &WildcardSymbol{}
-		return nil
-	default:
-		return errors.New("expected field argument in spread()")
-	}
+	return c.compileSymbol(expr.Name, expr.Args[0], out)
 }
 
 func (c *compiledField) compilePercentile(args []influxql.Expr, out *WriteEdge) error {
@@ -367,22 +291,7 @@ func (c *compiledField) compilePercentile(args []influxql.Expr, out *WriteEdge) 
 
 	p := &Percentile{Number: percentile, Output: out}
 	out, p.Input = AddEdge(nil, p)
-
-	// Must be a variable reference, wildcard, or regexp.
-	switch arg0 := args[0].(type) {
-	case *influxql.VarRef:
-		return c.compileVarRef(arg0, out)
-	case *influxql.Wildcard:
-		c.wildcardFunction("percentile")
-		c.Symbols.Table[out] = &WildcardSymbol{}
-		return nil
-	case *influxql.RegexLiteral:
-		c.wildcardFunctionFilter("percentile", arg0.Val)
-		c.Symbols.Table[out] = &WildcardSymbol{}
-		return nil
-	default:
-		return errors.New("expected field argument in percentile()")
-	}
+	return c.compileSymbol("percentile", args[0], out)
 }
 
 func (c *compiledField) compileSample(args []influxql.Expr, out *WriteEdge) error {
@@ -400,21 +309,188 @@ func (c *compiledField) compileSample(args []influxql.Expr, out *WriteEdge) erro
 
 	s := &Sample{N: n, Output: out}
 	out, s.Input = AddEdge(nil, s)
+	return c.compileSymbol("sample", args[0], out)
+}
 
-	// Must be a variable reference, wildcard, or regexp.
+func (c *compiledField) compileDerivative(args []influxql.Expr, isNonNegative bool, out *WriteEdge) error {
+	name := "derivative"
+	if isNonNegative {
+		name = "non_negative_derivative"
+	}
+
+	if min, max, got := 1, 2, len(args); got > max || got < min {
+		return fmt.Errorf("invalid number of arguments for %s, expected at least %d but no more than %d, got %d", name, min, max, got)
+	}
+
+	// Retrieve the duration from the derivative() call, if specified.
+	dur := time.Second
+	if len(args) == 2 {
+		switch arg1 := args[1].(type) {
+		case *influxql.DurationLiteral:
+			if arg1.Val <= 0 {
+				return fmt.Errorf("duration argument must be positive, got %s", influxql.FormatDuration(arg1.Val))
+			}
+			dur = arg1.Val
+		default:
+			return fmt.Errorf("second argument to %s must be a duration, got %T", name, args[1])
+		}
+	} else if !c.global.Interval.IsZero() {
+		// Otherwise use the group by interval, if specified.
+		dur = c.global.Interval.Duration
+	}
+
+	d := &Derivative{
+		Duration:      dur,
+		IsNonNegative: isNonNegative,
+		Output:        out,
+	}
+	out, d.Input = AddEdge(nil, d)
+
+	// Must be a variable reference, function, wildcard, or regexp.
 	switch arg0 := args[0].(type) {
-	case *influxql.VarRef:
-		return c.compileVarRef(arg0, out)
-	case *influxql.Wildcard:
-		c.wildcardFunction("sample")
-		c.Symbols.Table[out] = &WildcardSymbol{}
-		return nil
-	case *influxql.RegexLiteral:
-		c.wildcardFunctionFilter("sample", arg0.Val)
-		c.Symbols.Table[out] = &WildcardSymbol{}
-		return nil
+	case *influxql.Call:
+		if c.global.Interval.IsZero() {
+			return fmt.Errorf("%s aggregate requires a GROUP BY interval", arg0.Name)
+		}
+		return c.compileFunction(arg0, out)
 	default:
-		return errors.New("expected field argument in percentile()")
+		if !c.global.Interval.IsZero() {
+			return fmt.Errorf("aggregate function required inside the call to %s", name)
+		}
+		return c.compileSymbol(name, arg0, out)
+	}
+}
+
+func (c *compiledField) compileElapsed(args []influxql.Expr, out *WriteEdge) error {
+	if min, max, got := 1, 2, len(args); got > max || got < min {
+		return fmt.Errorf("invalid number of arguments for elapsed, expected at least %d but no more than %d, got %d", min, max, got)
+	}
+
+	// Retrieve the duration from the elapsed() call, if specified.
+	dur := time.Nanosecond
+	if len(args) == 2 {
+		switch arg1 := args[1].(type) {
+		case *influxql.DurationLiteral:
+			if arg1.Val <= 0 {
+				return fmt.Errorf("duration argument must be positive, got %s", influxql.FormatDuration(arg1.Val))
+			}
+			dur = arg1.Val
+		default:
+			return fmt.Errorf("second argument to elapsed must be a duration, got %T", args[1])
+		}
+	}
+
+	e := &Elapsed{
+		Duration: dur,
+		Output:   out,
+	}
+	out, e.Input = AddEdge(nil, e)
+
+	// Must be a variable reference, function, wildcard, or regexp.
+	switch arg0 := args[0].(type) {
+	case *influxql.Call:
+		if c.global.Interval.IsZero() {
+			return fmt.Errorf("%s aggregate requires a GROUP BY interval", arg0.Name)
+		}
+		return c.compileFunction(arg0, out)
+	default:
+		if !c.global.Interval.IsZero() {
+			return fmt.Errorf("aggregate function required inside the call to elapsed")
+		}
+		return c.compileSymbol("elapsed", arg0, out)
+	}
+}
+
+func (c *compiledField) compileDifference(args []influxql.Expr, isNonNegative bool, out *WriteEdge) error {
+	name := "difference"
+	if isNonNegative {
+		name = "non_negative_difference"
+	}
+
+	if got := len(args); got != 1 {
+		return fmt.Errorf("invalid number of arguments for %s, expected 1, got %d", name, got)
+	}
+
+	d := &Difference{
+		IsNonNegative: isNonNegative,
+		Output:        out,
+	}
+	out, d.Input = AddEdge(nil, d)
+
+	// Must be a variable reference, function, wildcard, or regexp.
+	switch arg0 := args[0].(type) {
+	case *influxql.Call:
+		if c.global.Interval.IsZero() {
+			return fmt.Errorf("%s aggregate requires a GROUP BY interval", arg0.Name)
+		}
+		return c.compileFunction(arg0, out)
+	default:
+		if !c.global.Interval.IsZero() {
+			return fmt.Errorf("aggregate function required inside the call to %s", name)
+		}
+		return c.compileSymbol(name, arg0, out)
+	}
+}
+
+func (c *compiledField) compileCumulativeSum(args []influxql.Expr, out *WriteEdge) error {
+	if got := len(args); got != 1 {
+		return fmt.Errorf("invalid number of arguments for cumulative_sum, expected 1, got %d", got)
+	}
+
+	cs := &CumulativeSum{Output: out}
+	out, cs.Input = AddEdge(nil, cs)
+
+	// Must be a variable reference, function, wildcard, or regexp.
+	switch arg0 := args[0].(type) {
+	case *influxql.Call:
+		if c.global.Interval.IsZero() {
+			return fmt.Errorf("%s aggregate requires a GROUP BY interval", arg0.Name)
+		}
+		return c.compileFunction(arg0, out)
+	default:
+		if !c.global.Interval.IsZero() {
+			return fmt.Errorf("aggregate function required inside the call to cumulative_sum")
+		}
+		return c.compileSymbol("cumulative_sum", arg0, out)
+	}
+}
+
+func (c *compiledField) compileMovingAverage(args []influxql.Expr, out *WriteEdge) error {
+	if got := len(args); got != 2 {
+		return fmt.Errorf("invalid number of arguments for moving_average, expected 2, got %d", got)
+	}
+
+	var windowSize int
+	switch arg1 := args[1].(type) {
+	case *influxql.IntegerLiteral:
+		if arg1.Val <= 1 {
+			return fmt.Errorf("moving_average window must be greater than 1, got %d", arg1.Val)
+		} else if int64(int(arg1.Val)) != arg1.Val {
+			return fmt.Errorf("moving_average window too large, got %d", arg1.Val)
+		}
+		windowSize = int(arg1.Val)
+	default:
+		return fmt.Errorf("second argument for moving_average must be an integer, got %T", args[1])
+	}
+
+	m := &MovingAverage{
+		WindowSize: windowSize,
+		Output:     out,
+	}
+	out, m.Input = AddEdge(nil, m)
+
+	// Must be a variable reference, function, wildcard, or regexp.
+	switch arg0 := args[0].(type) {
+	case *influxql.Call:
+		if c.global.Interval.IsZero() {
+			return fmt.Errorf("%s aggregate requires a GROUP BY interval", arg0.Name)
+		}
+		return c.compileFunction(arg0, out)
+	default:
+		if !c.global.Interval.IsZero() {
+			return fmt.Errorf("aggregate function required inside the call to moving_average")
+		}
+		return c.compileSymbol("moving_average", arg0, out)
 	}
 }
 
