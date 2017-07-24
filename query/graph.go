@@ -664,6 +664,52 @@ func (c *CumulativeSum) Execute(plan *Plan) error {
 	return errors.New("unimplemented")
 }
 
+type Integral struct {
+	Duration time.Duration
+	Input    *ReadEdge
+	Output   *WriteEdge
+}
+
+func (i *Integral) Description() string {
+	return fmt.Sprintf("integral(%s)", influxql.FormatDuration(i.Duration))
+}
+
+func (i *Integral) Inputs() []*ReadEdge   { return []*ReadEdge{i.Input} }
+func (i *Integral) Outputs() []*WriteEdge { return []*WriteEdge{i.Output} }
+
+func (i *Integral) Execute(plan *Plan) error {
+	if plan.DryRun {
+		i.Output.SetIterator(nil)
+		return nil
+	}
+	return errors.New("unimplemented")
+}
+
+type HoltWinters struct {
+	N, S    int
+	WithFit bool
+	Input   *ReadEdge
+	Output  *WriteEdge
+}
+
+func (hw *HoltWinters) Description() string {
+	if hw.WithFit {
+		return fmt.Sprintf("holt_winters_with_fit(%d, %d)", hw.N, hw.S)
+	}
+	return fmt.Sprintf("holt_winters(%d, %d)", hw.N, hw.S)
+}
+
+func (hw *HoltWinters) Inputs() []*ReadEdge   { return []*ReadEdge{hw.Input} }
+func (hw *HoltWinters) Outputs() []*WriteEdge { return []*WriteEdge{hw.Output} }
+
+func (hw *HoltWinters) Execute(plan *Plan) error {
+	if plan.DryRun {
+		hw.Output.SetIterator(nil)
+		return nil
+	}
+	return errors.New("unimplemented")
+}
+
 type Distinct struct {
 	Input  *ReadEdge
 	Output *WriteEdge

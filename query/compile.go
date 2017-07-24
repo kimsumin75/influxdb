@@ -163,6 +163,11 @@ func (c *compiledField) compileExpr(expr influxql.Expr, out *WriteEdge) error {
 			return c.compileCumulativeSum(expr.Args, out)
 		case "moving_average":
 			return c.compileMovingAverage(expr.Args, out)
+		case "integral":
+			return c.compileIntegral(expr.Args, out)
+		case "holt_winters", "holt_winters_with_fit":
+			withFit := expr.Name == "holt_winters_with_fit"
+			return c.compileHoltWinters(expr.Args, withFit, out)
 		default:
 			return c.compileFunction(expr, out)
 		}
@@ -289,7 +294,9 @@ func (c *compiledField) compilePercentile(args []influxql.Expr, out *WriteEdge) 
 		return fmt.Errorf("expected float argument in percentile()")
 	}
 
+	c.global.FunctionCalls = append(c.global.FunctionCalls, out.Output)
 	p := &Percentile{Number: percentile, Output: out}
+	out.Node = p
 	out, p.Input = AddEdge(nil, p)
 	return c.compileSymbol("percentile", args[0], out)
 }
@@ -307,7 +314,9 @@ func (c *compiledField) compileSample(args []influxql.Expr, out *WriteEdge) erro
 		return fmt.Errorf("expected integer argument in sample()")
 	}
 
+	c.global.FunctionCalls = append(c.global.FunctionCalls, out.Output)
 	s := &Sample{N: n, Output: out}
+	out.Node = s
 	out, s.Input = AddEdge(nil, s)
 	return c.compileSymbol("sample", args[0], out)
 }
@@ -339,12 +348,15 @@ func (c *compiledField) compileDerivative(args []influxql.Expr, isNonNegative bo
 		dur = c.global.Interval.Duration
 	}
 
+	c.global.FunctionCalls = append(c.global.FunctionCalls, out.Output)
 	d := &Derivative{
 		Duration:      dur,
 		IsNonNegative: isNonNegative,
 		Output:        out,
 	}
+	out.Node = d
 	out, d.Input = AddEdge(nil, d)
+	c.global.OnlySelectors = false
 
 	// Must be a variable reference, function, wildcard, or regexp.
 	switch arg0 := args[0].(type) {
@@ -380,11 +392,14 @@ func (c *compiledField) compileElapsed(args []influxql.Expr, out *WriteEdge) err
 		}
 	}
 
+	c.global.FunctionCalls = append(c.global.FunctionCalls, out.Output)
 	e := &Elapsed{
 		Duration: dur,
 		Output:   out,
 	}
+	out.Node = e
 	out, e.Input = AddEdge(nil, e)
+	c.global.OnlySelectors = false
 
 	// Must be a variable reference, function, wildcard, or regexp.
 	switch arg0 := args[0].(type) {
@@ -411,11 +426,14 @@ func (c *compiledField) compileDifference(args []influxql.Expr, isNonNegative bo
 		return fmt.Errorf("invalid number of arguments for %s, expected 1, got %d", name, got)
 	}
 
+	c.global.FunctionCalls = append(c.global.FunctionCalls, out.Output)
 	d := &Difference{
 		IsNonNegative: isNonNegative,
 		Output:        out,
 	}
+	out.Node = d
 	out, d.Input = AddEdge(nil, d)
+	c.global.OnlySelectors = false
 
 	// Must be a variable reference, function, wildcard, or regexp.
 	switch arg0 := args[0].(type) {
@@ -437,8 +455,11 @@ func (c *compiledField) compileCumulativeSum(args []influxql.Expr, out *WriteEdg
 		return fmt.Errorf("invalid number of arguments for cumulative_sum, expected 1, got %d", got)
 	}
 
+	c.global.FunctionCalls = append(c.global.FunctionCalls, out.Output)
 	cs := &CumulativeSum{Output: out}
+	out.Node = cs
 	out, cs.Input = AddEdge(nil, cs)
+	c.global.OnlySelectors = false
 
 	// Must be a variable reference, function, wildcard, or regexp.
 	switch arg0 := args[0].(type) {
@@ -473,11 +494,14 @@ func (c *compiledField) compileMovingAverage(args []influxql.Expr, out *WriteEdg
 		return fmt.Errorf("second argument for moving_average must be an integer, got %T", args[1])
 	}
 
+	c.global.FunctionCalls = append(c.global.FunctionCalls, out.Output)
 	m := &MovingAverage{
 		WindowSize: windowSize,
 		Output:     out,
 	}
+	out.Node = m
 	out, m.Input = AddEdge(nil, m)
+	c.global.OnlySelectors = false
 
 	// Must be a variable reference, function, wildcard, or regexp.
 	switch arg0 := args[0].(type) {
@@ -492,6 +516,81 @@ func (c *compiledField) compileMovingAverage(args []influxql.Expr, out *WriteEdg
 		}
 		return c.compileSymbol("moving_average", arg0, out)
 	}
+}
+
+func (c *compiledField) compileIntegral(args []influxql.Expr, out *WriteEdge) error {
+	if min, max, got := 1, 2, len(args); got > max || got < min {
+		return fmt.Errorf("invalid number of arguments for integral, expected at least %d but no more than %d, got %d", min, max, got)
+	}
+
+	dur := time.Second
+	if len(args) == 2 {
+		switch arg1 := args[1].(type) {
+		case *influxql.DurationLiteral:
+			if arg1.Val <= 0 {
+				return fmt.Errorf("duration argument must be positive, got %s", influxql.FormatDuration(arg1.Val))
+			}
+			dur = arg1.Val
+		default:
+			return errors.New("second argument must be a duration")
+		}
+	}
+
+	c.global.FunctionCalls = append(c.global.FunctionCalls, out.Output)
+	i := &Integral{
+		Duration: dur,
+		Output:   out,
+	}
+	out.Node = i
+	out, i.Input = AddEdge(nil, i)
+	c.global.OnlySelectors = false
+
+	// Must be a variable reference, wildcard, or regexp.
+	return c.compileSymbol("integral", args[0], out)
+}
+
+func (c *compiledField) compileHoltWinters(args []influxql.Expr, withFit bool, out *WriteEdge) error {
+	name := "holt_winters"
+	if withFit {
+		name = "holt_winters_with_fit"
+	}
+
+	if exp, got := 3, len(args); got != exp {
+		return fmt.Errorf("invalid number of arguments for %s, expected %d, got %d", name, exp, got)
+	}
+
+	n, ok := args[1].(*influxql.IntegerLiteral)
+	if !ok {
+		return fmt.Errorf("expected integer argument as second arg in %s", name)
+	} else if n.Val <= 0 {
+		return fmt.Errorf("second arg to %s must be greater than 0, got %d", name, n.Val)
+	}
+
+	s, ok := args[2].(*influxql.IntegerLiteral)
+	if !ok {
+		return fmt.Errorf("expected integer argument as third arg in %s", name)
+	} else if s.Val < 0 {
+		return fmt.Errorf("third arg to %s cannot be negative, got %d", name, s.Val)
+	}
+
+	c.global.FunctionCalls = append(c.global.FunctionCalls, out.Output)
+	hw := &HoltWinters{
+		N:       int(n.Val),
+		S:       int(s.Val),
+		WithFit: withFit,
+		Output:  out,
+	}
+	out.Node = hw
+	out, hw.Input = AddEdge(nil, hw)
+	c.global.OnlySelectors = false
+
+	call, ok := args[0].(*influxql.Call)
+	if !ok {
+		return fmt.Errorf("must use aggregate function with %s", name)
+	} else if c.global.Interval.IsZero() {
+		return fmt.Errorf("%s aggregate requires a GROUP BY interval", name)
+	}
+	return c.compileExpr(call, out)
 }
 
 func (c *compiledStatement) linkAuxiliaryFields() {

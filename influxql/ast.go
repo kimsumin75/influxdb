@@ -1772,56 +1772,6 @@ func (s *SelectStatement) HasDimensionWildcard() bool {
 	return false
 }
 
-func (s *SelectStatement) validateAggregates(tr targetRequirement) error {
-	for _, f := range s.Fields {
-		for _, expr := range walkFunctionCalls(f.Expr) {
-			switch expr.Name {
-			case "integral":
-				if min, max, got := 1, 2, len(expr.Args); got > max || got < min {
-					return fmt.Errorf("invalid number of arguments for %s, expected at least %d but no more than %d, got %d", expr.Name, min, max, got)
-				}
-				// If a duration arg is passed, make sure it's a duration
-				if len(expr.Args) == 2 {
-					// Second must be a duration .e.g (1h)
-					if _, ok := expr.Args[1].(*DurationLiteral); !ok {
-						return errors.New("second argument must be a duration")
-					}
-				}
-			case "holt_winters", "holt_winters_with_fit":
-				if exp, got := 3, len(expr.Args); got != exp {
-					return fmt.Errorf("invalid number of arguments for %s, expected %d, got %d", expr.Name, exp, got)
-				}
-				// Validate that if they have grouping by time, they need a sub-call like min/max, etc.
-				groupByInterval, err := s.GroupByInterval()
-				if err != nil {
-					return fmt.Errorf("invalid group interval: %v", err)
-				}
-
-				if _, ok := expr.Args[0].(*Call); ok && groupByInterval == 0 && tr != targetSubquery {
-					return fmt.Errorf("%s aggregate requires a GROUP BY interval", expr.Name)
-				} else if !ok {
-					return fmt.Errorf("must use aggregate function with %s", expr.Name)
-				}
-				if arg, ok := expr.Args[1].(*IntegerLiteral); !ok {
-					return fmt.Errorf("expected integer argument as second arg in %s", expr.Name)
-				} else if arg.Val <= 0 {
-					return fmt.Errorf("second arg to %s must be greater than 0, got %d", expr.Name, arg.Val)
-				}
-				if _, ok := expr.Args[2].(*IntegerLiteral); !ok {
-					return fmt.Errorf("expected integer argument as third arg in %s", expr.Name)
-				}
-			}
-		}
-	}
-
-	if tr != targetSubquery {
-		if err := s.validateGroupByInterval(); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 // validateGroupByInterval ensures that a select statement is grouped by an
 // interval if it contains certain functions.
 func (s *SelectStatement) validateGroupByInterval() error {
