@@ -411,7 +411,8 @@ func (e *StatementExecutor) executeExplainStatement(q *influxql.ExplainStatement
 	plan.DryRun = true
 	plan.MetaClient = e.MetaClient
 	plan.ShardMapper = e.ShardMapper
-	if _, _, err := c.Select(plan); err != nil {
+	outputs, columns, err := c.Select(plan)
+	if err != nil {
 		return nil, err
 	}
 
@@ -421,6 +422,12 @@ func (e *StatementExecutor) executeExplainStatement(q *influxql.ExplainStatement
 	for {
 		node := plan.FindWork()
 		if node == nil {
+			// Add additional rows for each of the outputs.
+			for i, output := range outputs {
+				depID := edgeIDs[output.Input.Node]
+				rows = append(rows, []interface{}{id, fmt.Sprintf("%T", output), columns[i], 0.0, strconv.Itoa(depID)})
+				id++
+			}
 			return models.Rows{{
 				Name:    "query plan",
 				Columns: []string{"id", "name", "description", "cost", "dependencies"},
