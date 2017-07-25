@@ -36,6 +36,11 @@ type compiledStatement struct {
 	// Interval holds the time grouping interval.
 	Interval influxql.Interval
 
+	// InheritedInterval marks if the interval was inherited by a parent.
+	// If this is set, then an interval that was inherited will not cause
+	// a query that shouldn't have an interval to fail.
+	InheritedInterval bool
+
 	// Ascending is true if the time ordering is ascending.
 	Ascending bool
 
@@ -73,13 +78,12 @@ type CompiledStatement interface {
 	Select(plan *Plan) ([]*ReadEdge, []string, error)
 }
 
-func newCompiler(stmt *influxql.SelectStatement, opt CompileOptions) *compiledStatement {
+func newCompiler(opt CompileOptions) *compiledStatement {
 	if opt.Now.IsZero() {
 		opt.Now = time.Now().UTC()
 	}
 	return &compiledStatement{
 		OnlySelectors: true,
-		Fields:        make([]*compiledField, 0, len(stmt.Fields)),
 		Tags:          make(map[string]struct{}),
 		Ascending:     true,
 		Options:       opt,
@@ -617,8 +621,6 @@ func (c *compiledStatement) linkAuxiliaryFields() {
 					Measurement:     source,
 				}
 				ic.Output = merge.AddInput(ic)
-			default:
-				panic("unimplemented")
 			}
 		}
 		out.Node = merge
@@ -807,7 +809,7 @@ func (c *compiledStatement) validateFields() error {
 		case influxql.LinearFill:
 			return errors.New("fill(linear) must be used with a function")
 		}
-		if !c.Interval.IsZero() {
+		if !c.Interval.IsZero() && !c.InheritedInterval {
 			return errors.New("GROUP BY requires at least one aggregate function")
 		}
 	}
@@ -828,7 +830,7 @@ func (c *compiledStatement) validateFields() error {
 
 // validateDimensions validates that the dimensions are appropriate for this type of query.
 func (c *compiledStatement) validateDimensions() error {
-	if !c.Interval.IsZero() {
+	if !c.Interval.IsZero() && !c.InheritedInterval {
 		// There must be a lower limit that wasn't implicitly set.
 		if c.TimeRange.Min.UnixNano() == influxql.MinTime {
 			return errors.New("aggregate functions with GROUP BY time require a WHERE time clause with a lower limit")
@@ -839,7 +841,30 @@ func (c *compiledStatement) validateDimensions() error {
 
 func Compile(stmt *influxql.SelectStatement, opt CompileOptions) (CompiledStatement, error) {
 	// Compile each of the expressions.
-	c := newCompiler(stmt, opt)
+	c := newCompiler(opt)
+	if err := c.prepare(stmt); err != nil {
+		return nil, err
+	}
+	if err := c.compile(stmt); err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+
+func (c *compiledStatement) compile(stmt *influxql.SelectStatement) error {
+	if err := c.compileFields(stmt); err != nil {
+		return err
+	}
+	if err := c.validateFields(); err != nil {
+		return err
+	}
+	if err := c.validateDimensions(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (c *compiledStatement) prepare(stmt *influxql.SelectStatement) error {
 	c.Sources = append(c.Sources, stmt.Sources...)
 	c.FillOption = stmt.Fill
 	c.Ascending = stmt.TimeAscending()
@@ -847,17 +872,19 @@ func Compile(stmt *influxql.SelectStatement, opt CompileOptions) (CompiledStatem
 	// Retrieve the condition expression and the time range.
 	valuer := influxql.NowValuer{Now: c.Options.Now}
 	if cond, timeRange, err := ParseCondition(stmt.Condition, &valuer); err != nil {
-		return nil, err
+		return err
 	} else {
 		c.Condition = cond
-		if timeRange != nil {
-			c.TimeRange = *timeRange
-		}
+		c.TimeRange = timeRange
 	}
 
 	// Read the dimensions of the query and retrieve the interval if it exists.
 	if err := c.compileDimensions(stmt); err != nil {
-		return nil, err
+		return err
+	}
+	// Copy the dimensions into the set of tags we wish to retrieve.
+	for _, d := range c.Dimensions {
+		c.Tags[d] = struct{}{}
 	}
 
 	// Resolve the min and max times now that we know if there is an interval or not.
@@ -875,6 +902,51 @@ func Compile(stmt *influxql.SelectStatement, opt CompileOptions) (CompiledStatem
 		}
 	}
 
+	// Prepare and compile each of the subqueries. We prepare outer queries
+	// before inner queries since the inner query is dependent on initial compilation
+	// of the outer query, but then the second portion of the compiler requires
+	// the subquery to have already been compiled.
+	for _, source := range stmt.Sources {
+		switch source := source.(type) {
+		case *influxql.SubQuery:
+			if _, err := c.subquery(source.Statement); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// subquery compiles and returns a compiled statement for the subquery using
+// this compiledStatement as the parent.
+func (c *compiledStatement) subquery(stmt *influxql.SelectStatement) (*compiledStatement, error) {
+	subquery := newCompiler(c.Options)
+	if err := subquery.prepare(stmt); err != nil {
+		return nil, err
+	}
+
+	// Override the dimensions for the child to the ones in the parent.
+	subquery.Dimensions = c.Dimensions
+
+	// Find the intersection between this time range and the parent.
+	// If the subquery doesn't have a time range, this causes it to
+	// inherit the parent's time range.
+	subquery.TimeRange = subquery.TimeRange.Intersect(c.TimeRange)
+
+	// Inherit the grouping interval if the subquery has none.
+	if !c.Interval.IsZero() && subquery.Interval.IsZero() {
+		subquery.Interval = c.Interval
+		subquery.InheritedInterval = true
+	}
+
+	if err := subquery.compile(stmt); err != nil {
+		return nil, err
+	}
+	return subquery, nil
+}
+
+func (c *compiledStatement) compileFields(stmt *influxql.SelectStatement) error {
+	c.Fields = make([]*compiledField, 0, len(stmt.Fields))
 	for _, f := range stmt.Fields {
 		if ref, ok := f.Expr.(*influxql.VarRef); ok && ref.Val == "time" {
 			continue
@@ -891,17 +963,10 @@ func Compile(stmt *influxql.SelectStatement, opt CompileOptions) (CompiledStatem
 		}
 		c.Fields = append(c.Fields, field)
 		if err := field.compileExpr(f.Expr, in); err != nil {
-			return nil, err
+			return err
 		}
 	}
-
-	if err := c.validateFields(); err != nil {
-		return nil, err
-	}
-	if err := c.validateDimensions(); err != nil {
-		return nil, err
-	}
-	return c, nil
+	return nil
 }
 
 // compileDimensions parses the dimensions and interval information from the
@@ -964,16 +1029,8 @@ type TimeRange struct {
 	Min, Max time.Time
 }
 
-// Intersect joins this TimeRange with another TimeRange. If one of the two is nil,
-// this returns the non-nil one. If both are non-nil, the caller is modified and
-// returned.
-func (t *TimeRange) Intersect(other *TimeRange) *TimeRange {
-	if other == nil {
-		return t
-	} else if t == nil {
-		return other
-	}
-
+// Intersect joins this TimeRange with another TimeRange.
+func (t TimeRange) Intersect(other TimeRange) TimeRange {
 	if !other.Min.IsZero() {
 		if t.Min.IsZero() || other.Min.After(t.Min) {
 			t.Min = other.Min
@@ -987,13 +1044,18 @@ func (t *TimeRange) Intersect(other *TimeRange) *TimeRange {
 	return t
 }
 
+// IsZero is true if the min and max of the time range are zero.
+func (t TimeRange) IsZero() bool {
+	return t.Min.IsZero() && t.Max.IsZero()
+}
+
 // ParseCondition extracts the time range and the condition from an expression.
 // We only support simple time ranges that are constrained with AND and are not nested.
 // This throws an error when we encounter a time condition that is combined with OR
 // to prevent returning unexpected results that we do not support.
-func ParseCondition(cond influxql.Expr, valuer influxql.Valuer) (influxql.Expr, *TimeRange, error) {
+func ParseCondition(cond influxql.Expr, valuer influxql.Valuer) (influxql.Expr, TimeRange, error) {
 	if cond == nil {
-		return nil, nil, nil
+		return nil, TimeRange{}, nil
 	}
 
 	switch cond := cond.(type) {
@@ -1001,18 +1063,18 @@ func ParseCondition(cond influxql.Expr, valuer influxql.Valuer) (influxql.Expr, 
 		if cond.Op == influxql.AND || cond.Op == influxql.OR {
 			lhsExpr, lhsTime, err := ParseCondition(cond.LHS, valuer)
 			if err != nil {
-				return nil, nil, err
+				return nil, TimeRange{}, err
 			}
 
 			rhsExpr, rhsTime, err := ParseCondition(cond.RHS, valuer)
 			if err != nil {
-				return nil, nil, err
+				return nil, TimeRange{}, err
 			}
 
 			// If either of the two expressions has a time range and we are combining
 			// them with OR, return an error since this isn't allowed.
-			if cond.Op == influxql.OR && (lhsTime != nil || rhsTime != nil) {
-				return nil, nil, errors.New("cannot use OR with time conditions")
+			if cond.Op == influxql.OR && !(lhsTime.IsZero() && rhsTime.IsZero()) {
+				return nil, TimeRange{}, errors.New("cannot use OR with time conditions")
 			}
 			timeRange := lhsTime.Intersect(rhsTime)
 
@@ -1050,24 +1112,24 @@ func ParseCondition(cond influxql.Expr, valuer influxql.Valuer) (influxql.Expr, 
 			timeRange, err := getTimeRange(op, cond.LHS, valuer)
 			return nil, timeRange, err
 		}
-		return cond, nil, nil
+		return cond, TimeRange{}, nil
 	case *influxql.ParenExpr:
 		return ParseCondition(cond.Expr, valuer)
 	default:
-		return nil, nil, fmt.Errorf("invalid condition expression: %s", cond)
+		return nil, TimeRange{}, fmt.Errorf("invalid condition expression: %s", cond)
 	}
 }
 
 // getTimeRange returns the time range associated with this comparison.
 // op is the operation that is used for comparison and rhs is the right hand side
 // of the expression. The left hand side is always assumed to be "time".
-func getTimeRange(op influxql.Token, rhs influxql.Expr, valuer influxql.Valuer) (*TimeRange, error) {
+func getTimeRange(op influxql.Token, rhs influxql.Expr, valuer influxql.Valuer) (TimeRange, error) {
 	// If literal looks like a date time then parse it as a time literal.
 	if strlit, ok := rhs.(*influxql.StringLiteral); ok {
 		if strlit.IsTimeLiteral() {
 			t, err := strlit.ToTimeLiteral()
 			if err != nil {
-				return nil, err
+				return TimeRange{}, err
 			}
 			rhs = t
 		}
@@ -1080,11 +1142,11 @@ func getTimeRange(op influxql.Token, rhs influxql.Expr, valuer influxql.Valuer) 
 	switch lit := rhs.(type) {
 	case *influxql.TimeLiteral:
 		if lit.Val.After(time.Unix(0, influxql.MaxTime)) {
-			return nil, fmt.Errorf("time %s overflows time literal", lit.Val.Format(time.RFC3339))
+			return TimeRange{}, fmt.Errorf("time %s overflows time literal", lit.Val.Format(time.RFC3339))
 		} else if lit.Val.Before(time.Unix(0, influxql.MinTime+1)) {
 			// The minimum allowable time literal is one greater than the minimum time because the minimum time
 			// is a sentinel value only used internally.
-			return nil, fmt.Errorf("time %s underflows time literal", lit.Val.Format(time.RFC3339))
+			return TimeRange{}, fmt.Errorf("time %s underflows time literal", lit.Val.Format(time.RFC3339))
 		}
 		value = lit.Val
 	case *influxql.DurationLiteral:
@@ -1094,10 +1156,10 @@ func getTimeRange(op influxql.Token, rhs influxql.Expr, valuer influxql.Valuer) 
 	case *influxql.IntegerLiteral:
 		value = time.Unix(0, lit.Val).UTC()
 	default:
-		return nil, fmt.Errorf("invalid operation: time and %T are not compatible", lit)
+		return TimeRange{}, fmt.Errorf("invalid operation: time and %T are not compatible", lit)
 	}
 
-	timeRange := &TimeRange{}
+	timeRange := TimeRange{}
 	switch op {
 	case influxql.GT:
 		timeRange.Min = value.Add(time.Nanosecond)
@@ -1110,7 +1172,7 @@ func getTimeRange(op influxql.Token, rhs influxql.Expr, valuer influxql.Valuer) 
 	case influxql.EQ:
 		timeRange.Min, timeRange.Max = value, value
 	default:
-		return nil, fmt.Errorf("invalid time comparison operator: %s", op)
+		return TimeRange{}, fmt.Errorf("invalid time comparison operator: %s", op)
 	}
 	return timeRange, nil
 }

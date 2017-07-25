@@ -61,6 +61,9 @@ func TestCompile_Success(t *testing.T) {
 		`SELECT bottom(value, 1) FROM cpu`,
 		`SELECT bottom(value, host, 1) FROM cpu`,
 		`SELECT bottom(value, 1), host FROM cpu`,
+		`SELECT max(mean) FROM (SELECT mean(value) FROM cpu GROUP BY host)`,
+		`SELECT max(derivative) FROM (SELECT derivative(mean(value)) FROM cpu) WHERE time >= now() - 1m GROUP BY time(10s)`,
+		`SELECT max(value) FROM (SELECT value + total FROM cpu) WHERE time >= now() - 1m GROUP BY time(10s)`,
 	} {
 		t.Run(tt, func(t *testing.T) {
 			stmt, err := influxql.ParseStatement(tt)
@@ -248,6 +251,7 @@ func TestCompile_Failures(t *testing.T) {
 		{s: `SELECT sum(mean) FROM (SELECT mean(value) FROM cpu GROUP BY time(1h))`, err: `aggregate functions with GROUP BY time require a WHERE time clause with a lower limit`},
 		{s: `SELECT top(value, 2), max(value) FROM cpu`, err: `selector function top() cannot be combined with other functions`},
 		{s: `SELECT bottom(value, 2), max(value) FROM cpu`, err: `selector function bottom() cannot be combined with other functions`},
+		{s: `SELECT min(derivative) FROM (SELECT derivative(mean(value), 1h) FROM myseries) where time < now() and time > now() - 1d`, err: `derivative aggregate requires a GROUP BY interval`},
 	} {
 		t.Run(tt.s, func(t *testing.T) {
 			stmt, err := influxql.ParseStatement(tt.s)
@@ -360,20 +364,11 @@ func TestCompile_ParseCondition(t *testing.T) {
 				t.Errorf("unexpected condition: %s != %s", have, want)
 			}
 
-			if tr != nil {
-				if !tr.Min.Equal(tt.min) {
-					t.Errorf("unexpected min time: %s != %s", tr.Min, tt.min)
-				}
-				if !tr.Max.Equal(tt.max) {
-					t.Errorf("unexpected max time: %s != %s", tr.Max, tt.max)
-				}
-			} else {
-				if !tt.min.IsZero() {
-					t.Errorf("unexpected min time: %s != %s", time.Time{}, tt.min)
-				}
-				if !tt.max.IsZero() {
-					t.Errorf("unexpected max time: %s != %s", time.Time{}, tt.max)
-				}
+			if !tr.Min.Equal(tt.min) {
+				t.Errorf("unexpected min time: %s != %s", tr.Min, tt.min)
+			}
+			if !tr.Max.Equal(tt.max) {
+				t.Errorf("unexpected max time: %s != %s", tr.Max, tt.max)
 			}
 		})
 	}
