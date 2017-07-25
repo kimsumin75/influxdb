@@ -1138,12 +1138,10 @@ func (c *compiledStatement) Select(plan *Plan) ([]*ReadEdge, []string, error) {
 	c.linkAuxiliaryFields()
 
 	// Determine the names for each field and fill the output slice.
-	// TODO(jsternberg): Resolve name conflicts.
+	columns := columnNames(fields)
 	outputs := make([]*ReadEdge, len(fields))
-	columns := make([]string, len(fields))
 	for i, f := range fields {
 		outputs[i] = f.Output
-		columns[i] = f.Name()
 	}
 
 	// Add all of the field outputs to the plan as targets.
@@ -1256,4 +1254,48 @@ func (c *compiledStatement) requireAuxiliaryFields() {
 	if c.AuxiliaryFields == nil {
 		c.AuxiliaryFields = &AuxiliaryFields{}
 	}
+}
+
+// columnNames processes the column names for the list of compiled fields
+// and resolves any conflicts. Aliases are always given highest priority
+// regardless of where they are in the statement.
+func columnNames(fields []*compiledField) []string {
+	columns := make([]string, len(fields))
+
+	// Keep track of the encountered column names.
+	names := make(map[string]int)
+
+	// Resolve aliases first.
+	for i, col := range fields {
+		if col.Field.Alias != "" {
+			name := col.Name()
+			columns[i] = name
+			names[name] = 1
+		}
+	}
+
+	// Resolve any generated names and resolve conflicts.
+	for i, col := range fields {
+		if columns[i] != "" {
+			continue
+		}
+
+		name := col.Name()
+		count, conflict := names[name]
+		if conflict {
+			for {
+				resolvedName := fmt.Sprintf("%s_%d", name, count)
+				_, conflict = names[resolvedName]
+				if !conflict {
+					names[name] = count + 1
+					name = resolvedName
+					break
+				}
+				count++
+			}
+		}
+		names[name]++
+		columns[i] = name
+	}
+	return columns
 }
