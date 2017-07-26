@@ -471,7 +471,7 @@ func (a *auxIteratorFields) close() {
 	}
 }
 
-// iterator creates a new iterator for a named auxilary field.
+// iterator creates a new iterator for a named auxiliary field.
 func (a *auxIteratorFields) iterator(name string, typ DataType) Iterator {
 	for _, f := range a.fields {
 		// Skip field if it's name doesn't match.

@@ -81,6 +81,113 @@ func (s *storageEngine) Close() error {
 	return s.shard.Close()
 }
 
+type subquery struct {
+	stmt      *compiledStatement
+	auxFields *AuxiliaryFields
+}
+
+func (s *subquery) link(m ShardMapper) (storage, error) {
+	// Link the subquery statement and store the linked fields.
+	fields, columns, err := s.stmt.link(m)
+	if err != nil {
+		return nil, err
+	}
+
+	// Retrieve the dimensions for this statement.
+	dimensions := make([]string, 0, len(s.stmt.Tags))
+	for d := range s.stmt.Tags {
+		dimensions = append(dimensions, d)
+	}
+
+	// Pack all of the output fields into the iterator mapper.
+	mapper := &IteratorMapper{AuxiliaryFields: s.auxFields}
+	mapper.InputNodes = make([]*ReadEdge, len(fields))
+	for i, f := range fields {
+		mapper.InputNodes[i] = f.Output
+		f.Output.Node = mapper
+	}
+
+	return &subqueryEngine{
+		fields:     fields,
+		columns:    columns,
+		dimensions: dimensions,
+		mapper:     mapper,
+	}, nil
+}
+
+type subqueryEngine struct {
+	fields     []*compiledField
+	columns    []string
+	dimensions []string
+	mapper     *IteratorMapper
+}
+
+func (s *subqueryEngine) FieldDimensions() (fields map[string]influxql.DataType, dimensions map[string]struct{}, err error) {
+	fields = make(map[string]influxql.DataType)
+	dimensions = make(map[string]struct{})
+
+	// Iterate over each of the fields and retrieve the type from the graph.
+	// Since linking has already been performed, everything should have types.
+	for i, f := range s.fields {
+		fields[s.columns[i]] = f.Output.Input.Node.Type()
+	}
+
+	// Copy the dimensions of the subquery into the dimensions.
+	for _, d := range s.dimensions {
+		dimensions[d] = struct{}{}
+	}
+	return fields, dimensions, nil
+}
+
+func (s *subqueryEngine) MapType(field string) influxql.DataType {
+	// Find the appropriate column for this field.
+	for i, name := range s.columns {
+		if name == field {
+			return s.fields[i].Output.Input.Node.Type()
+		}
+	}
+	return influxql.Unknown
+}
+
+func (s *subqueryEngine) Close() error {
+	return nil
+}
+
+func (s *subqueryEngine) resolve(ref *influxql.VarRef, out *WriteEdge) {
+	if ref == nil {
+		s.mapper.Aux(out)
+		return
+	}
+
+	clone := *ref
+	field := &AuxiliaryField{Ref: &clone, Output: out}
+	out.Node = field
+	out, field.Input = AddEdge(s.mapper, field)
+
+	// Search for a field matching the reference.
+	for i, name := range s.columns {
+		if name == ref.Val {
+			// Match this output edge with this field.
+			s.mapper.Field(i, out)
+			field.Ref.Type = s.fields[i].Output.Input.Node.Type()
+			return
+		}
+	}
+
+	// Search for a tag matching the reference.
+	for _, d := range s.dimensions {
+		if d == ref.Val {
+			s.mapper.Tag(d, out)
+			field.Ref.Type = influxql.Tag
+			return
+		}
+	}
+
+	// If all else fails, attach it to a nil reference.
+	n := &Nil{Output: out}
+	out.Node = n
+}
+
 type storageEngines []storage
 
 func (a storageEngines) FieldDimensions() (fields map[string]influxql.DataType, dimensions map[string]struct{}, err error) {

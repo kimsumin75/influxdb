@@ -143,6 +143,11 @@ type Node interface {
 	// Execute executes the Node and transmits the created Iterators to the
 	// output edges.
 	Execute(plan *Plan) error
+
+	// Type returns the type output for this node if it is known. Typically,
+	// type information is available after linking, but it may be known
+	// before that.
+	Type() influxql.DataType
 }
 
 type OptimizableNode interface {
@@ -163,31 +168,6 @@ func AllInputsReady(n Node) bool {
 		}
 	}
 	return true
-}
-
-var _ Node = &Iterator{}
-
-// Iterator holds the final Iterator or Iterators produced for consumption.
-// It has no outputs and may contain multiple (ordered) inputs.
-type Iterator struct {
-	Field      *influxql.Field
-	WriteEdges []*ReadEdge
-}
-
-func (i *Iterator) Description() string {
-	return i.Field.String()
-}
-
-func (i *Iterator) Inputs() []*ReadEdge      { return i.WriteEdges }
-func (i *Iterator) Outputs() []*WriteEdge    { return nil }
-func (i *Iterator) Execute(plan *Plan) error { return nil }
-
-func (i *Iterator) Iterators() []influxql.Iterator {
-	itrs := make([]influxql.Iterator, 0, len(i.WriteEdges))
-	for _, input := range i.WriteEdges {
-		itrs = append(itrs, input.Iterator())
-	}
-	return itrs
 }
 
 var _ Node = &IteratorCreator{}
@@ -254,6 +234,13 @@ func (ic *IteratorCreator) Execute(plan *Plan) error {
 	return nil
 }
 
+func (ic *IteratorCreator) Type() influxql.DataType {
+	if ic.Expr != nil {
+		return ic.Database.MapType(ic.Expr.Val)
+	}
+	return influxql.Unknown
+}
+
 var _ Node = &Merge{}
 
 type Merge struct {
@@ -295,6 +282,18 @@ func (m *Merge) Execute(plan *Plan) error {
 	itr := influxql.NewSortedMergeIterator(inputs, influxql.IteratorOptions{Ascending: true})
 	m.Output.SetIterator(itr)
 	return nil
+}
+
+func (m *Merge) Type() influxql.DataType {
+	var typ influxql.DataType
+	for _, input := range m.Inputs() {
+		if n := input.Input.Node; n != nil {
+			if t := n.Type(); typ.LessThan(t) {
+				typ = t
+			}
+		}
+	}
+	return typ
 }
 
 func (m *Merge) Optimize() {
@@ -382,6 +381,20 @@ func (c *FunctionCall) Execute(plan *Plan) error {
 	return nil
 }
 
+func (c *FunctionCall) Type() influxql.DataType {
+	switch c.Name {
+	case "mean":
+		return influxql.Float
+	case "count":
+		return influxql.Integer
+	default:
+		if n := c.Input.Input.Node; n != nil {
+			return n.Type()
+		}
+		return influxql.Unknown
+	}
+}
+
 type Median struct {
 	Input  *ReadEdge
 	Output *WriteEdge
@@ -400,6 +413,10 @@ func (m *Median) Execute(plan *Plan) error {
 		return nil
 	}
 	return errors.New("unimplemented")
+}
+
+func (m *Median) Type() influxql.DataType {
+	return influxql.Float
 }
 
 type Mode struct {
@@ -422,6 +439,13 @@ func (m *Mode) Execute(plan *Plan) error {
 	return errors.New("unimplemented")
 }
 
+func (m *Mode) Type() influxql.DataType {
+	if n := m.Input.Input.Node; n != nil {
+		return n.Type()
+	}
+	return influxql.Unknown
+}
+
 type Stddev struct {
 	Input  *ReadEdge
 	Output *WriteEdge
@@ -442,6 +466,13 @@ func (s *Stddev) Execute(plan *Plan) error {
 	return errors.New("unimplemented")
 }
 
+func (s *Stddev) Type() influxql.DataType {
+	if n := s.Input.Input.Node; n != nil {
+		return n.Type()
+	}
+	return influxql.Unknown
+}
+
 type Spread struct {
 	Input  *ReadEdge
 	Output *WriteEdge
@@ -460,6 +491,13 @@ func (s *Spread) Execute(plan *Plan) error {
 		return nil
 	}
 	return errors.New("unimplemented")
+}
+
+func (s *Spread) Type() influxql.DataType {
+	if n := s.Input.Input.Node; n != nil {
+		return n.Type()
+	}
+	return influxql.Unknown
 }
 
 type Percentile struct {
@@ -483,6 +521,13 @@ func (p *Percentile) Execute(plan *Plan) error {
 	return errors.New("unimplemented")
 }
 
+func (p *Percentile) Type() influxql.DataType {
+	if n := p.Input.Input.Node; n != nil {
+		return n.Type()
+	}
+	return influxql.Unknown
+}
+
 type Sample struct {
 	N      int
 	Input  *ReadEdge
@@ -502,6 +547,13 @@ func (s *Sample) Execute(plan *Plan) error {
 		return nil
 	}
 	return errors.New("unimplemented")
+}
+
+func (s *Sample) Type() influxql.DataType {
+	if n := s.Input.Input.Node; n != nil {
+		return n.Type()
+	}
+	return influxql.Unknown
 }
 
 type Derivative struct {
@@ -529,6 +581,10 @@ func (d *Derivative) Execute(plan *Plan) error {
 	return errors.New("unimplemented")
 }
 
+func (d *Derivative) Type() influxql.DataType {
+	return influxql.Float
+}
+
 type Elapsed struct {
 	Duration time.Duration
 	Input    *ReadEdge
@@ -548,6 +604,10 @@ func (e *Elapsed) Execute(plan *Plan) error {
 		return nil
 	}
 	return errors.New("unimplemented")
+}
+
+func (e *Elapsed) Type() influxql.DataType {
+	return influxql.Integer
 }
 
 type Difference struct {
@@ -574,6 +634,13 @@ func (d *Difference) Execute(plan *Plan) error {
 	return errors.New("unimplemented")
 }
 
+func (d *Difference) Type() influxql.DataType {
+	if n := d.Input.Input.Node; n != nil {
+		return n.Type()
+	}
+	return influxql.Unknown
+}
+
 type MovingAverage struct {
 	WindowSize int
 	Input      *ReadEdge
@@ -593,6 +660,10 @@ func (m *MovingAverage) Execute(plan *Plan) error {
 		return nil
 	}
 	return errors.New("unimplemented")
+}
+
+func (m *MovingAverage) Type() influxql.DataType {
+	return influxql.Float
 }
 
 type CumulativeSum struct {
@@ -615,6 +686,13 @@ func (c *CumulativeSum) Execute(plan *Plan) error {
 	return errors.New("unimplemented")
 }
 
+func (c *CumulativeSum) Type() influxql.DataType {
+	if n := c.Input.Input.Node; n != nil {
+		return n.Type()
+	}
+	return influxql.Unknown
+}
+
 type Integral struct {
 	Duration time.Duration
 	Input    *ReadEdge
@@ -634,6 +712,10 @@ func (i *Integral) Execute(plan *Plan) error {
 		return nil
 	}
 	return errors.New("unimplemented")
+}
+
+func (i *Integral) Type() influxql.DataType {
+	return influxql.Float
 }
 
 type HoltWinters struct {
@@ -659,6 +741,10 @@ func (hw *HoltWinters) Execute(plan *Plan) error {
 		return nil
 	}
 	return errors.New("unimplemented")
+}
+
+func (hw *HoltWinters) Type() influxql.DataType {
+	return influxql.Float
 }
 
 type Distinct struct {
@@ -689,6 +775,13 @@ func (d *Distinct) Execute(plan *Plan) error {
 	}
 	d.Output.SetIterator(itr)
 	return nil
+}
+
+func (d *Distinct) Type() influxql.DataType {
+	if n := d.Input.Input.Node; n != nil {
+		return n.Type()
+	}
+	return influxql.Unknown
 }
 
 type TopBottomSelector struct {
@@ -738,6 +831,13 @@ func (s *TopBottomSelector) Execute(plan *Plan) error {
 	}
 	s.Output.SetIterator(itr)
 	return nil
+}
+
+func (s *TopBottomSelector) Type() influxql.DataType {
+	if n := s.Input.Input.Node; n != nil {
+		return n.Type()
+	}
+	return influxql.Unknown
 }
 
 type AuxiliaryFields struct {
@@ -790,10 +890,20 @@ func (c *AuxiliaryFields) Execute(plan *Plan) error {
 	return nil
 }
 
+func (c *AuxiliaryFields) Type() influxql.DataType {
+	if n := c.Input.Input.Node; n != nil {
+		return n.Type()
+	}
+	return influxql.Unknown
+}
+
 // Iterator registers an auxiliary field to be sent to the passed in WriteEdge
 // and configures that WriteEdge with the AuxiliaryFields as its Node.
 func (c *AuxiliaryFields) Iterator(ref *influxql.VarRef, out *WriteEdge) {
-	out.Node = c
+	field := &AuxiliaryField{Ref: ref, Output: out}
+	out.Node = field
+
+	out, field.Input = AddEdge(c, field)
 	c.outputs = append(c.outputs, out)
 
 	// Attempt to find an existing variable that matches this one to avoid
@@ -809,6 +919,90 @@ func (c *AuxiliaryFields) Iterator(ref *influxql.VarRef, out *WriteEdge) {
 	// Register a new auxiliary field and take a reference to it.
 	c.Aux = append(c.Aux, *ref)
 	c.refs = append(c.refs, &c.Aux[len(c.Aux)-1])
+}
+
+var _ Node = &IteratorMapper{}
+
+type IteratorMapper struct {
+	AuxiliaryFields *AuxiliaryFields
+	InputNodes      []*ReadEdge
+	outputs         []*WriteEdge
+}
+
+func (m *IteratorMapper) Description() string {
+	return "map the results of the subquery"
+}
+
+func (m *IteratorMapper) Inputs() []*ReadEdge   { return m.InputNodes }
+func (m *IteratorMapper) Outputs() []*WriteEdge { return m.outputs }
+
+func (m *IteratorMapper) Execute(plan *Plan) error {
+	if plan.DryRun {
+		for _, output := range m.outputs {
+			output.SetIterator(nil)
+		}
+		return nil
+	}
+
+	for _, output := range m.outputs {
+		output.SetIterator(nil)
+	}
+	return nil
+}
+
+func (m *IteratorMapper) Type() influxql.DataType {
+	// This iterator does not produce any direct outputs, but instead
+	// reads through them and duplexes the results to its outputs.
+	// So it functionally has no type for the output since it has no output.
+	return influxql.Unknown
+}
+
+// Field registers an iterator to read from the field at the index.
+func (m *IteratorMapper) Field(index int, out *WriteEdge) {
+	m.outputs = append(m.outputs, out)
+	out.Node = m
+}
+
+// Tag registers an iterator to read from the tag with the given name.
+func (m *IteratorMapper) Tag(name string, out *WriteEdge) {
+	m.outputs = append(m.outputs, out)
+	out.Node = m
+}
+
+// Aux registers an iterator that has no driver and just reads the
+// auxiliary fields.
+func (m *IteratorMapper) Aux(out *WriteEdge) {
+	m.outputs = append(m.outputs, out)
+	out.Node = m
+}
+
+var _ Node = &AuxiliaryField{}
+
+type AuxiliaryField struct {
+	Ref    *influxql.VarRef
+	Input  *ReadEdge
+	Output *WriteEdge
+}
+
+func (f *AuxiliaryField) Description() string {
+	return f.Ref.String()
+}
+
+func (f *AuxiliaryField) Inputs() []*ReadEdge {
+	return []*ReadEdge{f.Input}
+}
+
+func (f *AuxiliaryField) Outputs() []*WriteEdge {
+	return []*WriteEdge{f.Output}
+}
+
+func (f *AuxiliaryField) Execute(plan *Plan) error {
+	f.Output.SetIterator(f.Input.Iterator())
+	return nil
+}
+
+func (f *AuxiliaryField) Type() influxql.DataType {
+	return f.Ref.Type
 }
 
 var _ Node = &BinaryExpr{}
@@ -843,6 +1037,22 @@ func (c *BinaryExpr) Execute(plan *Plan) error {
 	return nil
 }
 
+func (c *BinaryExpr) Type() influxql.DataType {
+	var lhs, rhs influxql.DataType
+	if n := c.LHS.Input.Node; n != nil {
+		lhs = n.Type()
+	}
+	if n := c.RHS.Input.Node; n != nil {
+		lhs = n.Type()
+	}
+
+	if lhs.LessThan(rhs) {
+		return rhs
+	} else {
+		return lhs
+	}
+}
+
 var _ Node = &Limit{}
 
 type Limit struct {
@@ -873,4 +1083,33 @@ func (c *Limit) Execute(plan *Plan) error {
 		return nil
 	}
 	return nil
+}
+
+func (c *Limit) Type() influxql.DataType {
+	if n := c.Input.Input.Node; n != nil {
+		return n.Type()
+	}
+	return influxql.Unknown
+}
+
+var _ Node = &Nil{}
+
+type Nil struct {
+	Output *WriteEdge
+}
+
+func (n *Nil) Description() string {
+	return "<nil>"
+}
+
+func (n *Nil) Inputs() []*ReadEdge   { return nil }
+func (n *Nil) Outputs() []*WriteEdge { return []*WriteEdge{n.Output} }
+
+func (n *Nil) Execute(plan *Plan) error {
+	n.Output.SetIterator(nil)
+	return nil
+}
+
+func (n *Nil) Type() influxql.DataType {
+	return influxql.Unknown
 }

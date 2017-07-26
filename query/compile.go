@@ -846,6 +846,28 @@ func (c *compiledStatement) compile(stmt *influxql.SelectStatement) error {
 	if err := c.validateDimensions(); err != nil {
 		return err
 	}
+
+	// Prepare and compile each of the subqueries. We prepare and compile outer queries
+	// before inner queries since the inner query is dependent on the outer query.
+	c.Sources = make([]compiledSource, 0, len(stmt.Sources))
+	for _, source := range stmt.Sources {
+		switch source := source.(type) {
+		case *influxql.SubQuery:
+			stmt, err := c.subquery(source.Statement)
+			if err != nil {
+				return err
+			}
+			c.Sources = append(c.Sources, &subquery{
+				stmt:      stmt,
+				auxFields: c.AuxiliaryFields,
+			})
+		case *influxql.Measurement:
+			c.Sources = append(c.Sources, &measurement{
+				stmt:   c,
+				source: source,
+			})
+		}
+	}
 	return nil
 }
 
@@ -883,25 +905,6 @@ func (c *compiledStatement) prepare(stmt *influxql.SelectStatement) error {
 			c.TimeRange.Max = c.Options.Now
 		} else {
 			c.TimeRange.Max = time.Unix(0, influxql.MaxTime).UTC()
-		}
-	}
-
-	// Prepare and compile each of the subqueries. We prepare outer queries
-	// before inner queries since the inner query is dependent on initial compilation
-	// of the outer query, but then the second portion of the compiler requires
-	// the subquery to have already been compiled.
-	c.Sources = make([]compiledSource, 0, len(stmt.Sources))
-	for _, source := range stmt.Sources {
-		switch source := source.(type) {
-		case *influxql.SubQuery:
-			if _, err := c.subquery(source.Statement); err != nil {
-				return err
-			}
-		case *influxql.Measurement:
-			c.Sources = append(c.Sources, &measurement{
-				stmt:   c,
-				source: source,
-			})
 		}
 	}
 	return nil
@@ -1168,41 +1171,12 @@ func getTimeRange(op influxql.Token, rhs influxql.Expr, valuer influxql.Valuer) 
 }
 
 func (c *compiledStatement) Select(plan *Plan) ([]*ReadEdge, []string, error) {
-	// Create a storage slice for the storage engines we are linking to.
-	sources := make([]storage, 0, len(c.Sources))
-
-	// Defer an action to close all of our accesses ahead of time so any errors
-	// get properly closed.
-	defer func() {
-		for _, s := range sources {
-			s.Close()
-		}
-	}()
-
-	// Link each of the sources to the storage engine using the shard mapper.
-	for _, s := range c.Sources {
-		source, err := s.link(plan.ShardMapper)
-		if err != nil {
-			return nil, nil, err
-		}
-		sources = append(sources, source)
+	// Link the compiled statements to the storage layer.
+	fields, columns, err := c.link(plan.ShardMapper)
+	if err != nil {
+		return nil, nil, err
 	}
 
-	// Resolve each of the symbols. This resolves wildcards and any types.
-	// The number of fields returned may be greater than the currently known
-	// number of fields because of wildcards or it could be less.
-	fields := make([]*compiledField, 0, len(c.Fields))
-	for _, f := range c.Fields {
-		outputs, err := c.link(f, storageEngines(sources))
-		if err != nil {
-			return nil, nil, err
-		}
-		fields = append(fields, outputs...)
-	}
-	c.linkAuxiliaryFields(storageEngines(sources))
-
-	// Determine the names for each field and fill the output slice.
-	columns := columnNames(fields)
 	outputs := make([]*ReadEdge, len(fields))
 	for i, f := range fields {
 		outputs[i] = f.Output
@@ -1215,7 +1189,40 @@ func (c *compiledStatement) Select(plan *Plan) ([]*ReadEdge, []string, error) {
 	return outputs, columns, nil
 }
 
-func (c *compiledStatement) link(f *compiledField, s storage) ([]*compiledField, error) {
+func (c *compiledStatement) link(m ShardMapper) ([]*compiledField, []string, error) {
+	// Create a storage slice for the storage engines we are linking to.
+	sources := make([]storage, 0, len(c.Sources))
+
+	// Link each of the sources to the storage engine using the shard mapper.
+	for _, s := range c.Sources {
+		source, err := s.link(m)
+		if err != nil {
+			storageEngines(sources).Close()
+			return nil, nil, err
+		}
+		sources = append(sources, source)
+	}
+	defer storageEngines(sources).Close()
+
+	// Resolve each of the symbols. This resolves wildcards and any types.
+	// The number of fields returned may be greater than the currently known
+	// number of fields because of wildcards or it could be less.
+	fields := make([]*compiledField, 0, len(c.Fields))
+	for _, f := range c.Fields {
+		outputs, err := c.linkField(f, storageEngines(sources))
+		if err != nil {
+			return nil, nil, err
+		}
+		fields = append(fields, outputs...)
+	}
+	c.linkAuxiliaryFields(storageEngines(sources))
+
+	// Determine the names for each field.
+	columns := columnNames(fields)
+	return fields, columns, nil
+}
+
+func (c *compiledStatement) linkField(f *compiledField, s storage) ([]*compiledField, error) {
 	// Resolve the wildcards for this field if they exist.
 	if f.Wildcard != nil {
 		fields, err := f.resolveWildcards(s)
