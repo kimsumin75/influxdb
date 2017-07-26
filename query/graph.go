@@ -199,6 +199,7 @@ type IteratorCreator struct {
 	Dimensions      []string
 	Tags            map[string]struct{}
 	TimeRange       TimeRange
+	Ascending       bool
 	Output          *WriteEdge
 }
 
@@ -243,7 +244,7 @@ func (ic *IteratorCreator) Execute(plan *Plan) error {
 		Aux:        auxFields,
 		StartTime:  ic.TimeRange.Min.UnixNano(),
 		EndTime:    ic.TimeRange.Max.UnixNano(),
-		Ascending:  true,
+		Ascending:  ic.Ascending,
 	}
 	itr, err := ic.Database.CreateIterator(opt)
 	if err != nil {

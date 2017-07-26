@@ -71,6 +71,7 @@ func (s *storageEngine) resolve(ref *influxql.VarRef, out *WriteEdge) {
 		Dimensions:      s.stmt.Dimensions,
 		Tags:            s.stmt.Tags,
 		TimeRange:       s.stmt.TimeRange,
+		Ascending:       s.stmt.Ascending,
 		Output:          out,
 	}
 	out.Node = ic
