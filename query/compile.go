@@ -18,7 +18,7 @@ type CompileOptions struct {
 
 type compiledStatement struct {
 	// Sources holds the data sources this will query from.
-	Sources influxql.Sources
+	Sources []compiledSource
 
 	// Dimensions holds the groupings for the statement.
 	Dimensions []string
@@ -599,7 +599,7 @@ func (c *compiledField) compileHoltWinters(args []influxql.Expr, withFit bool, o
 	return c.compileExpr(call, out)
 }
 
-func (c *compiledStatement) linkAuxiliaryFields() {
+func (c *compiledStatement) linkAuxiliaryFields(s storage) {
 	if c.AuxiliaryFields == nil {
 		return
 	}
@@ -608,22 +608,7 @@ func (c *compiledStatement) linkAuxiliaryFields() {
 		// Create a default IteratorCreator for this AuxiliaryFields.
 		var out *WriteEdge
 		out, c.AuxiliaryFields.Input = AddEdge(nil, c.AuxiliaryFields)
-
-		merge := &Merge{Output: out}
-		for _, source := range c.Sources {
-			switch source := source.(type) {
-			case *influxql.Measurement:
-				ic := &IteratorCreator{
-					Dimensions:      c.Dimensions,
-					Tags:            c.Tags,
-					TimeRange:       c.TimeRange,
-					AuxiliaryFields: c.AuxiliaryFields,
-					Measurement:     source,
-				}
-				ic.Output = merge.AddInput(ic)
-			}
-		}
-		out.Node = merge
+		s.resolve(nil, out)
 	} else {
 		c.AuxiliaryFields.Input, c.AuxiliaryFields.Output = c.FunctionCalls[0].Insert(c.AuxiliaryFields)
 	}
@@ -776,9 +761,9 @@ func (c *compiledField) wildcardFunction(name string) {
 	c.global.OnlySelectors = false
 }
 
-func (c *compiledField) resolveSymbols(m ShardGroup) {
+func (c *compiledField) resolveSymbols(s storage) {
 	for out, symbol := range c.Symbols.Table {
-		symbol.resolve(m, c, out)
+		symbol.resolve(s, c, out)
 	}
 }
 
@@ -865,7 +850,6 @@ func (c *compiledStatement) compile(stmt *influxql.SelectStatement) error {
 }
 
 func (c *compiledStatement) prepare(stmt *influxql.SelectStatement) error {
-	c.Sources = append(c.Sources, stmt.Sources...)
 	c.FillOption = stmt.Fill
 	c.Ascending = stmt.TimeAscending()
 
@@ -906,12 +890,18 @@ func (c *compiledStatement) prepare(stmt *influxql.SelectStatement) error {
 	// before inner queries since the inner query is dependent on initial compilation
 	// of the outer query, but then the second portion of the compiler requires
 	// the subquery to have already been compiled.
+	c.Sources = make([]compiledSource, 0, len(stmt.Sources))
 	for _, source := range stmt.Sources {
 		switch source := source.(type) {
 		case *influxql.SubQuery:
 			if _, err := c.subquery(source.Statement); err != nil {
 				return err
 			}
+		case *influxql.Measurement:
+			c.Sources = append(c.Sources, &measurement{
+				stmt:   c,
+				source: source,
+			})
 		}
 	}
 	return nil
@@ -1178,26 +1168,38 @@ func getTimeRange(op influxql.Token, rhs influxql.Expr, valuer influxql.Valuer) 
 }
 
 func (c *compiledStatement) Select(plan *Plan) ([]*ReadEdge, []string, error) {
-	// Map the shards using the time range and sources.
-	opt := influxql.SelectOptions{MinTime: c.TimeRange.Min, MaxTime: c.TimeRange.Max}
-	mapper, err := plan.ShardMapper.MapShards(c.Sources, &opt)
-	if err != nil {
-		return nil, nil, err
+	// Create a storage slice for the storage engines we are linking to.
+	sources := make([]storage, 0, len(c.Sources))
+
+	// Defer an action to close all of our accesses ahead of time so any errors
+	// get properly closed.
+	defer func() {
+		for _, s := range sources {
+			s.Close()
+		}
+	}()
+
+	// Link each of the sources to the storage engine using the shard mapper.
+	for _, s := range c.Sources {
+		source, err := s.link(plan.ShardMapper)
+		if err != nil {
+			return nil, nil, err
+		}
+		sources = append(sources, source)
 	}
-	defer mapper.Close()
 
 	// Resolve each of the symbols. This resolves wildcards and any types.
 	// The number of fields returned may be greater than the currently known
 	// number of fields because of wildcards or it could be less.
 	fields := make([]*compiledField, 0, len(c.Fields))
 	for _, f := range c.Fields {
-		outputs, err := c.link(f, mapper)
+		outputs, err := c.link(f, storageEngines(sources))
 		if err != nil {
 			return nil, nil, err
 		}
 		fields = append(fields, outputs...)
 	}
-	c.linkAuxiliaryFields()
+	c.linkAuxiliaryFields(storageEngines(sources))
 
 	// Determine the names for each field and fill the output slice.
 	columns := columnNames(fields)
@@ -1213,28 +1215,28 @@ func (c *compiledStatement) Select(plan *Plan) ([]*ReadEdge, []string, error) {
 	return outputs, columns, nil
 }
 
-func (c *compiledStatement) link(f *compiledField, m ShardGroup) ([]*compiledField, error) {
+func (c *compiledStatement) link(f *compiledField, s storage) ([]*compiledField, error) {
 	// Resolve the wildcards for this field if they exist.
 	if f.Wildcard != nil {
-		fields, err := f.resolveWildcards(m)
+		fields, err := f.resolveWildcards(s)
 		if err != nil {
 			return nil, err
 		}
 
 		for _, f := range fields {
-			f.resolveSymbols(m)
+			f.resolveSymbols(s)
 		}
 		return fields, nil
 	}
 
 	// Resolve all of the symbols for this field.
-	f.resolveSymbols(m)
+	f.resolveSymbols(s)
 	return []*compiledField{f}, nil
 }
 
-func (c *compiledField) resolveWildcards(m ShardGroup) ([]*compiledField, error) {
+func (c *compiledField) resolveWildcards(s storage) ([]*compiledField, error) {
 	// Retrieve the field dimensions from the shard mapper.
-	fields, dimensions, err := influxql.FieldDimensions(c.global.Sources, m)
+	fields, dimensions, err := s.FieldDimensions()
 	if err != nil {
 		return nil, err
 	}

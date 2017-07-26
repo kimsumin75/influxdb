@@ -3,8 +3,11 @@ package query
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
+
+	"bytes"
 
 	"github.com/influxdata/influxdb/influxql"
 )
@@ -190,9 +193,9 @@ func (i *Iterator) Iterators() []influxql.Iterator {
 var _ Node = &IteratorCreator{}
 
 type IteratorCreator struct {
-	Expr            influxql.Expr
+	Expr            *influxql.VarRef
 	AuxiliaryFields *AuxiliaryFields
-	Measurement     *influxql.Measurement
+	Database        Database
 	Dimensions      []string
 	Tags            map[string]struct{}
 	TimeRange       TimeRange
@@ -200,7 +203,19 @@ type IteratorCreator struct {
 }
 
 func (ic *IteratorCreator) Description() string {
-	return fmt.Sprintf("create iterator for %s", ic.Measurement)
+	var buf bytes.Buffer
+	buf.WriteString("create iterator")
+	if ic.Expr != nil {
+		fmt.Fprintf(&buf, " for %s", ic.Expr)
+	}
+	if ic.AuxiliaryFields != nil {
+		names := make([]string, 0, len(ic.AuxiliaryFields.Aux))
+		for _, name := range ic.AuxiliaryFields.Aux {
+			names = append(names, name.String())
+		}
+		fmt.Fprintf(&buf, " [%s]", strings.Join(names, ", "))
+	}
+	return buf.String()
 }
 
 func (ic *IteratorCreator) Inputs() []*ReadEdge { return nil }
@@ -212,90 +227,29 @@ func (ic *IteratorCreator) Outputs() []*WriteEdge {
 }
 
 func (ic *IteratorCreator) Execute(plan *Plan) error {
-	if plan.MetaClient == nil {
-		if !plan.DryRun {
-			return errors.New("no meta client set")
-		}
+	if plan.DryRun {
+		ic.Output.SetIterator(nil)
+		return nil
 	}
 
-	start, end := time.Unix(0, influxql.MinTime), time.Unix(0, influxql.MaxTime)
-	shards, err := plan.MetaClient.ShardsByTimeRange(influxql.Sources{ic.Measurement}, start, end)
-	if err != nil {
-		return err
-	}
-
-	// Create a merge node that all of our generated inputs will go into. Set
-	// the output of the Merge node to where the output of this node was
-	// supposed to go.
-	merge := &Merge{
-		Output: ic.Output,
-	}
-	merge.Output.Node = merge
-
-	// Lookup the shards.
 	var auxFields []influxql.VarRef
 	if ic.AuxiliaryFields != nil {
 		auxFields = ic.AuxiliaryFields.Aux
 	}
-	for _, shardInfo := range shards {
-		sh := &ShardIteratorCreator{
-			Expr:       ic.Expr,
-			Dimensions: ic.Dimensions,
-			Tags:       ic.Tags,
-			TimeRange:  ic.TimeRange,
-			Aux:        auxFields,
-			Ref:        ic.Measurement.Name,
-			ShardID:    shardInfo.ID,
-		}
-		sh.Output = merge.AddInput(sh)
-	}
-	ic.Output = nil
-	merge.Optimize()
-	plan.ScheduleWork(merge)
-	return nil
-}
-
-var _ Node = &ShardIteratorCreator{}
-
-type ShardIteratorCreator struct {
-	Expr       influxql.Expr
-	Dimensions []string
-	Tags       map[string]struct{}
-	TimeRange  TimeRange
-	Aux        []influxql.VarRef
-	Ref        string
-	ShardID    uint64
-	Output     *WriteEdge
-}
-
-func (sh *ShardIteratorCreator) Description() string {
-	return fmt.Sprintf("create iterator for %s [shard %d]", sh.Ref, sh.ShardID)
-}
-
-func (sh *ShardIteratorCreator) Inputs() []*ReadEdge   { return nil }
-func (sh *ShardIteratorCreator) Outputs() []*WriteEdge { return []*WriteEdge{sh.Output} }
-
-func (sh *ShardIteratorCreator) Execute(plan *Plan) error {
-	if plan.DryRun {
-		sh.Output.SetIterator(nil)
-		return nil
-	}
-
-	shard := plan.TSDBStore.ShardGroup([]uint64{sh.ShardID})
 	opt := influxql.IteratorOptions{
-		Expr:       sh.Expr,
-		Dimensions: sh.Dimensions,
-		GroupBy:    sh.Tags,
-		Aux:        sh.Aux,
-		StartTime:  sh.TimeRange.Min.UnixNano(),
-		EndTime:    sh.TimeRange.Max.UnixNano(),
+		Expr:       ic.Expr,
+		Dimensions: ic.Dimensions,
+		GroupBy:    ic.Tags,
+		Aux:        auxFields,
+		StartTime:  ic.TimeRange.Min.UnixNano(),
+		EndTime:    ic.TimeRange.Max.UnixNano(),
 		Ascending:  true,
 	}
-	itr, err := shard.CreateIterator(sh.Ref, opt)
+	itr, err := ic.Database.CreateIterator(opt)
 	if err != nil {
 		return err
 	}
-	sh.Output.SetIterator(itr)
+	ic.Output.SetIterator(itr)
 	return nil
 }
 
@@ -383,7 +337,6 @@ var _ Node = &FunctionCall{}
 
 type FunctionCall struct {
 	Name       string
-	Arg        influxql.VarRef
 	Dimensions []string
 	GroupBy    map[string]struct{}
 	Interval   influxql.Interval
@@ -411,10 +364,7 @@ func (c *FunctionCall) Execute(plan *Plan) error {
 		return nil
 	}
 
-	call := &influxql.Call{
-		Name: c.Name,
-		Args: []influxql.Expr{&c.Arg},
-	}
+	call := &influxql.Call{Name: c.Name}
 	opt := influxql.IteratorOptions{
 		Expr:       call,
 		Dimensions: c.Dimensions,

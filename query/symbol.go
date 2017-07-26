@@ -6,7 +6,7 @@ import (
 
 type Symbol interface {
 	// resolve will resolve the Symbol with a Node and attach it to the WriteEdge.
-	resolve(m ShardGroup, c *compiledField, out *WriteEdge)
+	resolve(s storage, c *compiledField, out *WriteEdge)
 }
 
 type SymbolTable struct {
@@ -17,52 +17,34 @@ type AuxiliarySymbol struct {
 	Ref *influxql.VarRef
 }
 
-func (s *AuxiliarySymbol) resolve(m ShardGroup, c *compiledField, out *WriteEdge) {
+func (s *AuxiliarySymbol) resolve(storage storage, c *compiledField, out *WriteEdge) {
 	// Determine the type for the reference if it hasn't been resolved yet.
 	ref := *s.Ref
-	ref.Type = influxql.EvalType(&ref, c.global.Sources, m)
+	ref.Type = storage.MapType(ref.Val)
 	c.global.AuxiliaryFields.Iterator(&ref, out)
 }
 
 type AuxiliaryWildcardSymbol struct{}
 
-func (s *AuxiliaryWildcardSymbol) resolve(m ShardGroup, c *compiledField, out *WriteEdge) {
+func (s *AuxiliaryWildcardSymbol) resolve(storage storage, c *compiledField, out *WriteEdge) {
 	symbol := AuxiliarySymbol{Ref: c.WildcardRef}
-	symbol.resolve(m, c, out)
+	symbol.resolve(storage, c, out)
 }
 
 type VarRefSymbol struct {
 	Ref *influxql.VarRef
 }
 
-func (s *VarRefSymbol) resolve(m ShardGroup, c *compiledField, out *WriteEdge) {
+func (s *VarRefSymbol) resolve(storage storage, c *compiledField, out *WriteEdge) {
 	// Determine the type for the reference if it hasn't been resolved yet.
 	ref := *s.Ref
-	ref.Type = influxql.EvalType(&ref, c.global.Sources, m)
-
-	merge := &Merge{Output: out}
-	for _, source := range c.global.Sources {
-		switch source := source.(type) {
-		case *influxql.Measurement:
-			ic := &IteratorCreator{
-				Expr:            s.Ref,
-				Dimensions:      c.global.Dimensions,
-				Tags:            c.global.Tags,
-				TimeRange:       c.global.TimeRange,
-				AuxiliaryFields: c.global.AuxiliaryFields,
-				Measurement:     source,
-			}
-			ic.Output = merge.AddInput(ic)
-		default:
-			panic("unimplemented")
-		}
-	}
-	out.Node = merge
+	ref.Type = storage.MapType(ref.Val)
+	storage.resolve(s.Ref, out)
 }
 
 type WildcardSymbol struct{}
 
-func (s *WildcardSymbol) resolve(m ShardGroup, c *compiledField, out *WriteEdge) {
+func (s *WildcardSymbol) resolve(storage storage, c *compiledField, out *WriteEdge) {
 	symbol := VarRefSymbol{Ref: c.WildcardRef}
-	symbol.resolve(m, c, out)
+	symbol.resolve(storage, c, out)
 }

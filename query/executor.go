@@ -1,20 +1,12 @@
 package query
 
 import (
-	"io"
 	"time"
 
 	"github.com/influxdata/influxdb/influxql"
 	"github.com/influxdata/influxdb/services/meta"
 	"github.com/influxdata/influxdb/tsdb"
 )
-
-// IteratorCreator is an interface that combines mapping fields and creating iterators.
-type ShardGroup interface {
-	influxql.IteratorCreator
-	influxql.FieldMapper
-	io.Closer
-}
 
 type Plan struct {
 	DryRun bool
@@ -28,7 +20,7 @@ type Plan struct {
 	}
 
 	ShardMapper interface {
-		MapShards(sources influxql.Sources, opt *influxql.SelectOptions) (ShardGroup, error)
+		MapShards(m *influxql.Measurement, opt *influxql.SelectOptions) (Database, error)
 	}
 
 	ready map[Node]struct{}
