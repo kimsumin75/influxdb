@@ -1,8 +1,6 @@
 package query
 
 type Plan struct {
-	DryRun bool
-
 	ready map[Node]struct{}
 	want  map[*ReadEdge]struct{}
 }

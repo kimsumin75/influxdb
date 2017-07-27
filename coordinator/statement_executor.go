@@ -418,7 +418,6 @@ func (e *StatementExecutor) executeExplainStatement(q *influxql.ExplainStatement
 	}
 
 	plan := query.NewPlan()
-	plan.DryRun = true
 	for _, out := range outputs {
 		plan.AddTarget(out)
 	}
@@ -464,7 +463,12 @@ func (e *StatementExecutor) executeExplainStatement(q *influxql.ExplainStatement
 		rows = append(rows, []interface{}{id, fmt.Sprintf("%T", node), node.Description(), 0.0, dependencies})
 		edgeIDs[node] = id
 		id++
-		node.Execute(plan)
+
+		// Set each of the outputs for the current node to nil and then
+		// mark the node as finished. Do not invoke Execute.
+		for _, out := range node.Outputs() {
+			out.SetIterator(nil)
+		}
 		plan.NodeFinished(node)
 	}
 }
@@ -672,7 +676,7 @@ func (e *StatementExecutor) createIterators(stmt *influxql.SelectStatement, ctx 
 		if node == nil {
 			break
 		}
-		if err := node.Execute(plan); err != nil {
+		if err := node.Execute(); err != nil {
 			return nil, nil, err
 		}
 		plan.NodeFinished(node)

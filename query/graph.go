@@ -141,7 +141,7 @@ type Node interface {
 
 	// Execute executes the Node and transmits the created Iterators to the
 	// output edges.
-	Execute(plan *Plan) error
+	Execute() error
 
 	// Type returns the type output for this node if it is known. Typically,
 	// type information is available after linking, but it may be known
@@ -206,12 +206,7 @@ func (ic *IteratorCreator) Outputs() []*WriteEdge {
 	return nil
 }
 
-func (ic *IteratorCreator) Execute(plan *Plan) error {
-	if plan.DryRun {
-		ic.Output.SetIterator(nil)
-		return nil
-	}
-
+func (ic *IteratorCreator) Execute() error {
 	var auxFields []influxql.VarRef
 	if ic.AuxiliaryFields != nil {
 		auxFields = ic.AuxiliaryFields.Aux
@@ -260,12 +255,7 @@ func (m *Merge) AddInput(n Node) *WriteEdge {
 func (m *Merge) Inputs() []*ReadEdge   { return m.InputNodes }
 func (m *Merge) Outputs() []*WriteEdge { return []*WriteEdge{m.Output} }
 
-func (m *Merge) Execute(plan *Plan) error {
-	if plan.DryRun {
-		m.Output.SetIterator(nil)
-		return nil
-	}
-
+func (m *Merge) Execute() error {
 	if len(m.InputNodes) == 0 {
 		m.Output.SetIterator(nil)
 		return nil
@@ -351,12 +341,7 @@ func (c *FunctionCall) Description() string {
 func (c *FunctionCall) Inputs() []*ReadEdge   { return []*ReadEdge{c.Input} }
 func (c *FunctionCall) Outputs() []*WriteEdge { return []*WriteEdge{c.Output} }
 
-func (c *FunctionCall) Execute(plan *Plan) error {
-	if plan.DryRun {
-		c.Output.SetIterator(nil)
-		return nil
-	}
-
+func (c *FunctionCall) Execute() error {
 	input := c.Input.Iterator()
 	if input == nil {
 		c.Output.SetIterator(input)
@@ -406,11 +391,7 @@ func (m *Median) Description() string {
 func (m *Median) Inputs() []*ReadEdge   { return []*ReadEdge{m.Input} }
 func (m *Median) Outputs() []*WriteEdge { return []*WriteEdge{m.Output} }
 
-func (m *Median) Execute(plan *Plan) error {
-	if plan.DryRun {
-		m.Output.SetIterator(nil)
-		return nil
-	}
+func (m *Median) Execute() error {
 	return errors.New("unimplemented")
 }
 
@@ -430,11 +411,7 @@ func (m *Mode) Description() string {
 func (m *Mode) Inputs() []*ReadEdge   { return []*ReadEdge{m.Input} }
 func (m *Mode) Outputs() []*WriteEdge { return []*WriteEdge{m.Output} }
 
-func (m *Mode) Execute(plan *Plan) error {
-	if plan.DryRun {
-		m.Output.SetIterator(nil)
-		return nil
-	}
+func (m *Mode) Execute() error {
 	return errors.New("unimplemented")
 }
 
@@ -457,11 +434,7 @@ func (s *Stddev) Description() string {
 func (s *Stddev) Inputs() []*ReadEdge   { return []*ReadEdge{s.Input} }
 func (s *Stddev) Outputs() []*WriteEdge { return []*WriteEdge{s.Output} }
 
-func (s *Stddev) Execute(plan *Plan) error {
-	if plan.DryRun {
-		s.Output.SetIterator(nil)
-		return nil
-	}
+func (s *Stddev) Execute() error {
 	return errors.New("unimplemented")
 }
 
@@ -484,11 +457,7 @@ func (s *Spread) Description() string {
 func (s *Spread) Inputs() []*ReadEdge   { return []*ReadEdge{s.Input} }
 func (s *Spread) Outputs() []*WriteEdge { return []*WriteEdge{s.Output} }
 
-func (s *Spread) Execute(plan *Plan) error {
-	if plan.DryRun {
-		s.Output.SetIterator(nil)
-		return nil
-	}
+func (s *Spread) Execute() error {
 	return errors.New("unimplemented")
 }
 
@@ -512,11 +481,7 @@ func (p *Percentile) Description() string {
 func (p *Percentile) Inputs() []*ReadEdge   { return []*ReadEdge{p.Input} }
 func (p *Percentile) Outputs() []*WriteEdge { return []*WriteEdge{p.Output} }
 
-func (p *Percentile) Execute(plan *Plan) error {
-	if plan.DryRun {
-		p.Output.SetIterator(nil)
-		return nil
-	}
+func (p *Percentile) Execute() error {
 	return errors.New("unimplemented")
 }
 
@@ -540,11 +505,7 @@ func (s *Sample) Description() string {
 func (s *Sample) Inputs() []*ReadEdge   { return []*ReadEdge{s.Input} }
 func (s *Sample) Outputs() []*WriteEdge { return []*WriteEdge{s.Output} }
 
-func (s *Sample) Execute(plan *Plan) error {
-	if plan.DryRun {
-		s.Output.SetIterator(nil)
-		return nil
-	}
+func (s *Sample) Execute() error {
 	return errors.New("unimplemented")
 }
 
@@ -572,11 +533,7 @@ func (d *Derivative) Description() string {
 func (d *Derivative) Inputs() []*ReadEdge   { return []*ReadEdge{d.Input} }
 func (d *Derivative) Outputs() []*WriteEdge { return []*WriteEdge{d.Output} }
 
-func (d *Derivative) Execute(plan *Plan) error {
-	if plan.DryRun {
-		d.Output.SetIterator(nil)
-		return nil
-	}
+func (d *Derivative) Execute() error {
 	return errors.New("unimplemented")
 }
 
@@ -597,11 +554,7 @@ func (e *Elapsed) Description() string {
 func (e *Elapsed) Inputs() []*ReadEdge   { return []*ReadEdge{e.Input} }
 func (e *Elapsed) Outputs() []*WriteEdge { return []*WriteEdge{e.Output} }
 
-func (e *Elapsed) Execute(plan *Plan) error {
-	if plan.DryRun {
-		e.Output.SetIterator(nil)
-		return nil
-	}
+func (e *Elapsed) Execute() error {
 	return errors.New("unimplemented")
 }
 
@@ -625,11 +578,7 @@ func (d *Difference) Description() string {
 func (d *Difference) Inputs() []*ReadEdge   { return []*ReadEdge{d.Input} }
 func (d *Difference) Outputs() []*WriteEdge { return []*WriteEdge{d.Output} }
 
-func (d *Difference) Execute(plan *Plan) error {
-	if plan.DryRun {
-		d.Output.SetIterator(nil)
-		return nil
-	}
+func (d *Difference) Execute() error {
 	return errors.New("unimplemented")
 }
 
@@ -653,11 +602,7 @@ func (m *MovingAverage) Description() string {
 func (m *MovingAverage) Inputs() []*ReadEdge   { return []*ReadEdge{m.Input} }
 func (m *MovingAverage) Outputs() []*WriteEdge { return []*WriteEdge{m.Output} }
 
-func (m *MovingAverage) Execute(plan *Plan) error {
-	if plan.DryRun {
-		m.Output.SetIterator(nil)
-		return nil
-	}
+func (m *MovingAverage) Execute() error {
 	return errors.New("unimplemented")
 }
 
@@ -677,11 +622,7 @@ func (c *CumulativeSum) Description() string {
 func (c *CumulativeSum) Inputs() []*ReadEdge   { return []*ReadEdge{c.Input} }
 func (c *CumulativeSum) Outputs() []*WriteEdge { return []*WriteEdge{c.Output} }
 
-func (c *CumulativeSum) Execute(plan *Plan) error {
-	if plan.DryRun {
-		c.Output.SetIterator(nil)
-		return nil
-	}
+func (c *CumulativeSum) Execute() error {
 	return errors.New("unimplemented")
 }
 
@@ -705,11 +646,7 @@ func (i *Integral) Description() string {
 func (i *Integral) Inputs() []*ReadEdge   { return []*ReadEdge{i.Input} }
 func (i *Integral) Outputs() []*WriteEdge { return []*WriteEdge{i.Output} }
 
-func (i *Integral) Execute(plan *Plan) error {
-	if plan.DryRun {
-		i.Output.SetIterator(nil)
-		return nil
-	}
+func (i *Integral) Execute() error {
 	return errors.New("unimplemented")
 }
 
@@ -734,11 +671,7 @@ func (hw *HoltWinters) Description() string {
 func (hw *HoltWinters) Inputs() []*ReadEdge   { return []*ReadEdge{hw.Input} }
 func (hw *HoltWinters) Outputs() []*WriteEdge { return []*WriteEdge{hw.Output} }
 
-func (hw *HoltWinters) Execute(plan *Plan) error {
-	if plan.DryRun {
-		hw.Output.SetIterator(nil)
-		return nil
-	}
+func (hw *HoltWinters) Execute() error {
 	return errors.New("unimplemented")
 }
 
@@ -758,12 +691,7 @@ func (d *Distinct) Description() string {
 func (d *Distinct) Inputs() []*ReadEdge   { return []*ReadEdge{d.Input} }
 func (d *Distinct) Outputs() []*WriteEdge { return []*WriteEdge{d.Output} }
 
-func (d *Distinct) Execute(plan *Plan) error {
-	if plan.DryRun {
-		d.Output.SetIterator(nil)
-		return nil
-	}
-
+func (d *Distinct) Execute() error {
 	opt := influxql.IteratorOptions{
 		StartTime: influxql.MinTime,
 		EndTime:   influxql.MaxTime,
@@ -800,12 +728,7 @@ func (s *TopBottomSelector) Description() string {
 func (s *TopBottomSelector) Inputs() []*ReadEdge   { return []*ReadEdge{s.Input} }
 func (s *TopBottomSelector) Outputs() []*WriteEdge { return []*WriteEdge{s.Output} }
 
-func (s *TopBottomSelector) Execute(plan *Plan) error {
-	if plan.DryRun {
-		s.Output.SetIterator(nil)
-		return nil
-	}
-
+func (s *TopBottomSelector) Execute() error {
 	input := s.Input.Iterator()
 	if input == nil {
 		s.Output.SetIterator(input)
@@ -863,17 +786,7 @@ func (c *AuxiliaryFields) Outputs() []*WriteEdge {
 	}
 }
 
-func (c *AuxiliaryFields) Execute(plan *Plan) error {
-	if plan.DryRun {
-		if c.Output != nil {
-			c.Output.SetIterator(nil)
-		}
-		for _, output := range c.outputs {
-			output.SetIterator(nil)
-		}
-		return nil
-	}
-
+func (c *AuxiliaryFields) Execute() error {
 	opt := influxql.IteratorOptions{Aux: c.Aux}
 	aitr := influxql.NewAuxIterator(c.Input.Iterator(), opt)
 	for i, ref := range c.refs {
@@ -935,14 +848,7 @@ func (m *IteratorMapper) Description() string {
 func (m *IteratorMapper) Inputs() []*ReadEdge   { return m.InputNodes }
 func (m *IteratorMapper) Outputs() []*WriteEdge { return m.outputs }
 
-func (m *IteratorMapper) Execute(plan *Plan) error {
-	if plan.DryRun {
-		for _, output := range m.outputs {
-			output.SetIterator(nil)
-		}
-		return nil
-	}
-
+func (m *IteratorMapper) Execute() error {
 	for _, output := range m.outputs {
 		output.SetIterator(nil)
 	}
@@ -995,7 +901,7 @@ func (f *AuxiliaryField) Outputs() []*WriteEdge {
 	return []*WriteEdge{f.Output}
 }
 
-func (f *AuxiliaryField) Execute(plan *Plan) error {
+func (f *AuxiliaryField) Execute() error {
 	f.Output.SetIterator(f.Input.Iterator())
 	return nil
 }
@@ -1020,12 +926,7 @@ func (c *BinaryExpr) Description() string {
 func (c *BinaryExpr) Inputs() []*ReadEdge   { return []*ReadEdge{c.LHS, c.RHS} }
 func (c *BinaryExpr) Outputs() []*WriteEdge { return []*WriteEdge{c.Output} }
 
-func (c *BinaryExpr) Execute(plan *Plan) error {
-	if plan.DryRun {
-		c.Output.SetIterator(nil)
-		return nil
-	}
-
+func (c *BinaryExpr) Execute() error {
 	opt := influxql.IteratorOptions{}
 	lhs, rhs := c.LHS.Iterator(), c.RHS.Iterator()
 	itr, err := influxql.BuildTransformIterator(lhs, rhs, c.Op, opt)
@@ -1076,12 +977,8 @@ func (c *Limit) Description() string {
 func (c *Limit) Inputs() []*ReadEdge   { return []*ReadEdge{c.Input} }
 func (c *Limit) Outputs() []*WriteEdge { return []*WriteEdge{c.Output} }
 
-func (c *Limit) Execute(plan *Plan) error {
-	if plan.DryRun {
-		c.Output.SetIterator(nil)
-		return nil
-	}
-	return nil
+func (c *Limit) Execute() error {
+	return errors.New("unimplemented")
 }
 
 func (c *Limit) Type() influxql.DataType {
@@ -1104,7 +1001,7 @@ func (n *Nil) Description() string {
 func (n *Nil) Inputs() []*ReadEdge   { return nil }
 func (n *Nil) Outputs() []*WriteEdge { return []*WriteEdge{n.Output} }
 
-func (n *Nil) Execute(plan *Plan) error {
+func (n *Nil) Execute() error {
 	n.Output.SetIterator(nil)
 	return nil
 }
