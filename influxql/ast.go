@@ -68,15 +68,6 @@ func InspectDataType(v interface{}) DataType {
 	}
 }
 
-// InspectDataTypes returns all of the data types for an interface slice.
-func InspectDataTypes(a []interface{}) []DataType {
-	dta := make([]DataType, len(a))
-	for i, v := range a {
-		dta[i] = InspectDataType(v)
-	}
-	return dta
-}
-
 // LessThan returns true if the other DataType has greater precedence than the
 // current data type. Unknown has the lowest precedence.
 //
@@ -340,54 +331,12 @@ func (*SubQuery) source()    {}
 // Sources represents a list of sources.
 type Sources []Source
 
-// Names returns a list of source names.
-func (a Sources) Names() []string {
-	names := make([]string, 0, len(a))
-	for _, s := range a {
-		switch s := s.(type) {
-		case *Measurement:
-			names = append(names, s.Name)
-		}
-	}
-	return names
-}
-
-// Filter returns a list of source names filtered by the database/retention policy.
-func (a Sources) Filter(database, retentionPolicy string) []Source {
-	sources := make([]Source, 0, len(a))
-	for _, s := range a {
-		switch s := s.(type) {
-		case *Measurement:
-			if s.Database == database && s.RetentionPolicy == retentionPolicy {
-				sources = append(sources, s)
-			}
-		case *SubQuery:
-			filteredSources := s.Statement.Sources.Filter(database, retentionPolicy)
-			sources = append(sources, filteredSources...)
-		}
-	}
-	return sources
-}
-
 // HasSystemSource returns true if any of the sources are internal, system sources.
 func (a Sources) HasSystemSource() bool {
 	for _, s := range a {
 		switch s := s.(type) {
 		case *Measurement:
 			if IsSystemName(s.Name) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// HasRegex returns true if any of the sources are regex measurements.
-func (a Sources) HasRegex() bool {
-	for _, s := range a {
-		switch s := s.(type) {
-		case *Measurement:
-			if s.Regex != nil {
 				return true
 			}
 		}
@@ -1046,46 +995,6 @@ type SelectStatement struct {
 	Dedupe bool
 }
 
-// HasDerivative returns true if any function call in the statement is a
-// derivative aggregate.
-func (s *SelectStatement) HasDerivative() bool {
-	for _, f := range s.FunctionCalls() {
-		if f.Name == "derivative" || f.Name == "non_negative_derivative" {
-			return true
-		}
-	}
-	return false
-}
-
-// IsSimpleDerivative return true if any function call is a derivative function with a
-// variable ref as the first arg.
-func (s *SelectStatement) IsSimpleDerivative() bool {
-	for _, f := range s.FunctionCalls() {
-		if f.Name == "derivative" || f.Name == "non_negative_derivative" {
-			// it's nested if the first argument is an aggregate function
-			if _, ok := f.Args[0].(*VarRef); ok {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// HasSelector returns true if there is exactly one selector.
-func (s *SelectStatement) HasSelector() bool {
-	var selector *Call
-	for _, f := range s.Fields {
-		if call, ok := f.Expr.(*Call); ok {
-			if selector != nil || !IsSelector(call) {
-				// This is an aggregate call or there is already a selector.
-				return false
-			}
-			selector = call
-		}
-	}
-	return selector != nil
-}
-
 // TimeAscending returns true if the time field is sorted in chronological order.
 func (s *SelectStatement) TimeAscending() bool {
 	return len(s.SortFields) == 0 || s.SortFields[0].Ascending
@@ -1244,144 +1153,6 @@ func matchExactRegex(v string) (string, bool) {
 	return "", true
 }
 
-// RewriteDistinct rewrites the expression to be a call for map/reduce to work correctly.
-// This method assumes all validation has passed.
-func (s *SelectStatement) RewriteDistinct() {
-	WalkFunc(s.Fields, func(n Node) {
-		switch n := n.(type) {
-		case *Field:
-			if expr, ok := n.Expr.(*Distinct); ok {
-				n.Expr = expr.NewCall()
-				s.IsRawQuery = false
-			}
-		case *Call:
-			for i, arg := range n.Args {
-				if arg, ok := arg.(*Distinct); ok {
-					n.Args[i] = arg.NewCall()
-				}
-			}
-		}
-	})
-}
-
-// RewriteTimeFields removes any "time" field references.
-func (s *SelectStatement) RewriteTimeFields() {
-	for i := 0; i < len(s.Fields); i++ {
-		switch expr := s.Fields[i].Expr.(type) {
-		case *VarRef:
-			if expr.Val == "time" {
-				s.TimeAlias = s.Fields[i].Alias
-				s.Fields = append(s.Fields[:i], s.Fields[i+1:]...)
-			}
-		}
-	}
-}
-
-// RewriteTimeCondition adds time constraints to aggregate queries.
-func (s *SelectStatement) RewriteTimeCondition(now time.Time) error {
-	interval, err := s.GroupByInterval()
-	if err != nil {
-		return err
-	} else if interval > 0 && s.Condition != nil {
-		_, tmax, err := TimeRange(s.Condition, s.Location)
-		if err != nil {
-			return err
-		}
-
-		if tmax.IsZero() {
-			s.Condition = &BinaryExpr{
-				Op:  AND,
-				LHS: s.Condition,
-				RHS: &BinaryExpr{
-					Op:  LTE,
-					LHS: &VarRef{Val: "time"},
-					RHS: &TimeLiteral{Val: now},
-				},
-			}
-		}
-	}
-
-	for _, source := range s.Sources {
-		switch source := source.(type) {
-		case *SubQuery:
-			if err := source.Statement.RewriteTimeCondition(now); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-// ColumnNames will walk all fields and functions and return the appropriate field names for the select statement
-// while maintaining order of the field names.
-func (s *SelectStatement) ColumnNames() []string {
-	// First walk each field to determine the number of columns.
-	columnFields := Fields{}
-	for _, field := range s.Fields {
-		columnFields = append(columnFields, field)
-
-		switch f := field.Expr.(type) {
-		case *Call:
-			if s.Target == nil && (f.Name == "top" || f.Name == "bottom") {
-				for _, arg := range f.Args[1:] {
-					ref, ok := arg.(*VarRef)
-					if ok {
-						columnFields = append(columnFields, &Field{Expr: ref})
-					}
-				}
-			}
-		}
-	}
-
-	// Determine if we should add an extra column for an implicit time.
-	offset := 0
-	if !s.OmitTime {
-		offset++
-	}
-
-	columnNames := make([]string, len(columnFields)+offset)
-	if !s.OmitTime {
-		// Add the implicit time if requested.
-		columnNames[0] = s.TimeFieldName()
-	}
-
-	// Keep track of the encountered column names.
-	names := make(map[string]int)
-
-	// Resolve aliases first.
-	for i, col := range columnFields {
-		if col.Alias != "" {
-			columnNames[i+offset] = col.Alias
-			names[col.Alias] = 1
-		}
-	}
-
-	// Resolve any generated names and resolve conflicts.
-	for i, col := range columnFields {
-		if columnNames[i+offset] != "" {
-			continue
-		}
-
-		name := col.Name()
-		count, conflict := names[name]
-		if conflict {
-			for {
-				resolvedName := fmt.Sprintf("%s_%d", name, count)
-				_, conflict = names[resolvedName]
-				if !conflict {
-					names[name] = count + 1
-					name = resolvedName
-					break
-				}
-				count++
-			}
-		}
-		names[name]++
-		columnNames[i+offset] = name
-	}
-	return columnNames
-}
-
 // FieldExprByName returns the expression that matches the field name and the
 // index where this was found. If the name matches one of the arguments to
 // "top" or "bottom", the variable reference inside of the function is returned
@@ -1419,17 +1190,6 @@ func (s *SelectStatement) Reduce(valuer Valuer) *SelectStatement {
 		}
 	}
 	return stmt
-}
-
-// HasTimeFieldSpecified will walk all fields and determine if the user explicitly asked for time.
-// This is needed to determine re-write behaviors for functions like TOP and BOTTOM.
-func (s *SelectStatement) HasTimeFieldSpecified() bool {
-	for _, f := range s.Fields {
-		if f.Name() == "time" {
-			return true
-		}
-	}
-	return false
 }
 
 // String returns a string representation of the select statement.
@@ -1517,76 +1277,6 @@ func (s *SelectStatement) RequiredPrivileges() (ExecutionPrivileges, error) {
 		ep = append(ep, p)
 	}
 	return ep, nil
-}
-
-// HasWildcard returns whether or not the select statement has at least 1 wildcard.
-func (s *SelectStatement) HasWildcard() bool {
-	return s.HasFieldWildcard() || s.HasDimensionWildcard()
-}
-
-// HasFieldWildcard returns whether or not the select statement has at least 1 wildcard in the fields.
-func (s *SelectStatement) HasFieldWildcard() (hasWildcard bool) {
-	WalkFunc(s.Fields, func(n Node) {
-		if hasWildcard {
-			return
-		}
-		switch n.(type) {
-		case *Wildcard, *RegexLiteral:
-			hasWildcard = true
-		}
-	})
-	return hasWildcard
-}
-
-// HasDimensionWildcard returns whether or not the select statement has
-// at least 1 wildcard in the dimensions aka `GROUP BY`.
-func (s *SelectStatement) HasDimensionWildcard() bool {
-	for _, d := range s.Dimensions {
-		switch d.Expr.(type) {
-		case *Wildcard, *RegexLiteral:
-			return true
-		}
-	}
-
-	return false
-}
-
-// validateGroupByInterval ensures that a select statement is grouped by an
-// interval if it contains certain functions.
-func (s *SelectStatement) validateGroupByInterval() error {
-	interval, err := s.GroupByInterval()
-	if err != nil {
-		return err
-	} else if interval > 0 {
-		// If we have an interval here, that means the interval will propagate
-		// into any subqueries and we can just stop looking.
-		return nil
-	}
-
-	// Check inside of the fields for any of the specific functions that ned a group by interval.
-	for _, f := range s.Fields {
-		switch expr := f.Expr.(type) {
-		case *Call:
-			switch expr.Name {
-			case "derivative", "non_negative_derivative", "difference", "non_negative_difference", "moving_average", "cumulative_sum", "elapsed", "holt_winters", "holt_winters_with_fit":
-				// If the first argument is a call, we needed a group by interval and we don't have one.
-				if _, ok := expr.Args[0].(*Call); ok {
-					return fmt.Errorf("%s aggregate requires a GROUP BY interval", expr.Name)
-				}
-			}
-		}
-	}
-
-	// Validate the subqueries.
-	for _, source := range s.Sources {
-		switch source := source.(type) {
-		case *SubQuery:
-			if err := source.Statement.validateGroupByInterval(); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
 }
 
 // GroupByInterval extracts the time interval, if specified.
@@ -1689,37 +1379,6 @@ func (s *SelectStatement) rewriteWithoutTimeDimensions() string {
 	return n.String()
 }
 
-// NamesInWhere returns the field and tag names (idents) referenced in the where clause.
-func (s *SelectStatement) NamesInWhere() []string {
-	var a []string
-	if s.Condition != nil {
-		a = walkNames(s.Condition)
-	}
-	return a
-}
-
-// NamesInSelect returns the field and tag names (idents) in the select clause.
-func (s *SelectStatement) NamesInSelect() []string {
-	var a []string
-
-	for _, f := range s.Fields {
-		a = append(a, walkNames(f.Expr)...)
-	}
-
-	return a
-}
-
-// NamesInDimension returns the field and tag names (idents) in the group by clause.
-func (s *SelectStatement) NamesInDimension() []string {
-	var a []string
-
-	for _, d := range s.Dimensions {
-		a = append(a, walkNames(d.Expr)...)
-	}
-
-	return a
-}
-
 // LimitTagSets returns a tag set list with SLIMIT and SOFFSET applied.
 func LimitTagSets(a []*TagSet, slimit, soffset int) []*TagSet {
 	// Ignore if no limit or offset is specified.
@@ -1737,31 +1396,6 @@ func LimitTagSets(a []*TagSet, slimit, soffset int) []*TagSet {
 		slimit = len(a) - soffset
 	}
 	return a[soffset : soffset+slimit]
-}
-
-// walkNames will walk the Expr and return the identifier names used.
-func walkNames(exp Expr) []string {
-	switch expr := exp.(type) {
-	case *VarRef:
-		return []string{expr.Val}
-	case *Call:
-		var a []string
-		for _, expr := range expr.Args {
-			if ref, ok := expr.(*VarRef); ok {
-				a = append(a, ref.Val)
-			}
-		}
-		return a
-	case *BinaryExpr:
-		var ret []string
-		ret = append(ret, walkNames(expr.LHS)...)
-		ret = append(ret, walkNames(expr.RHS)...)
-		return ret
-	case *ParenExpr:
-		return walkNames(expr.Expr)
-	}
-
-	return nil
 }
 
 // walkRefs will walk the Expr and return the var refs used.
@@ -1808,57 +1442,6 @@ func ExprNames(expr Expr) []VarRef {
 	sort.Sort(VarRefs(a))
 
 	return a
-}
-
-// FunctionCalls returns the Call objects from the query.
-func (s *SelectStatement) FunctionCalls() []*Call {
-	var a []*Call
-	for _, f := range s.Fields {
-		a = append(a, walkFunctionCalls(f.Expr)...)
-	}
-	return a
-}
-
-// FunctionCallsByPosition returns the Call objects from the query in the order they appear in the select statement.
-func (s *SelectStatement) FunctionCallsByPosition() [][]*Call {
-	var a [][]*Call
-	for _, f := range s.Fields {
-		a = append(a, walkFunctionCalls(f.Expr))
-	}
-	return a
-}
-
-// walkFunctionCalls walks the Expr and returns any function calls made.
-func walkFunctionCalls(exp Expr) []*Call {
-	switch expr := exp.(type) {
-	case *VarRef:
-		return nil
-	case *Call:
-		return []*Call{expr}
-	case *BinaryExpr:
-		var ret []*Call
-		ret = append(ret, walkFunctionCalls(expr.LHS)...)
-		ret = append(ret, walkFunctionCalls(expr.RHS)...)
-		return ret
-	case *ParenExpr:
-		return walkFunctionCalls(expr.Expr)
-	}
-
-	return nil
-}
-
-// MatchSource returns the source name that matches a field name.
-// It returns a blank string if no sources match.
-func MatchSource(sources Sources, name string) string {
-	for _, src := range sources {
-		switch src := src.(type) {
-		case *Measurement:
-			if strings.HasPrefix(name, src.Name) {
-				return src.Name
-			}
-		}
-	}
-	return ""
 }
 
 // Target represents a target (destination) policy, measurement, and DB.
@@ -2711,34 +2294,6 @@ func (s *ShowFieldKeysStatement) DefaultDatabase() string {
 
 // Fields represents a list of fields.
 type Fields []*Field
-
-// AliasNames returns a list of calculated field names in
-// order of alias, function name, then field.
-func (a Fields) AliasNames() []string {
-	names := []string{}
-	for _, f := range a {
-		names = append(names, f.Name())
-	}
-	return names
-}
-
-// Names returns a list of field names.
-func (a Fields) Names() []string {
-	names := []string{}
-	for _, f := range a {
-		switch expr := f.Expr.(type) {
-		case *Call:
-			names = append(names, expr.Name)
-		case *VarRef:
-			names = append(names, expr.Val)
-		case *BinaryExpr:
-			names = append(names, walkNames(expr)...)
-		case *ParenExpr:
-			names = append(names, walkNames(expr)...)
-		}
-	}
-	return names
-}
 
 // String returns a string representation of the fields.
 func (a Fields) String() string {
@@ -3902,130 +3457,6 @@ func EvalBool(expr Expr, m map[string]interface{}) bool {
 	return v
 }
 
-// TypeMapper maps a data type to the measurement and field.
-type TypeMapper interface {
-	MapType(measurement *Measurement, field string) DataType
-}
-
-type nilTypeMapper struct{}
-
-func (nilTypeMapper) MapType(*Measurement, string) DataType { return Unknown }
-
-// EvalType evaluates the expression's type.
-func EvalType(expr Expr, sources Sources, typmap TypeMapper) DataType {
-	if typmap == nil {
-		typmap = nilTypeMapper{}
-	}
-
-	switch expr := expr.(type) {
-	case *VarRef:
-		// If this variable already has an assigned type, just use that.
-		if expr.Type != Unknown && expr.Type != AnyField {
-			return expr.Type
-		}
-
-		var typ DataType
-		for _, src := range sources {
-			switch src := src.(type) {
-			case *Measurement:
-				if t := typmap.MapType(src, expr.Val); typ.LessThan(t) {
-					typ = t
-				}
-			case *SubQuery:
-				_, e := src.Statement.FieldExprByName(expr.Val)
-				if e != nil {
-					if t := EvalType(e, src.Statement.Sources, typmap); typ.LessThan(t) {
-						typ = t
-					}
-				}
-
-				if typ == Unknown {
-					for _, d := range src.Statement.Dimensions {
-						if d, ok := d.Expr.(*VarRef); ok && expr.Val == d.Val {
-							typ = Tag
-						}
-					}
-				}
-			}
-		}
-		return typ
-	case *Call:
-		switch expr.Name {
-		case "mean", "median", "integral":
-			return Float
-		case "count":
-			return Integer
-		default:
-			return EvalType(expr.Args[0], sources, typmap)
-		}
-	case *ParenExpr:
-		return EvalType(expr.Expr, sources, typmap)
-	case *NumberLiteral:
-		return Float
-	case *IntegerLiteral:
-		return Integer
-	case *StringLiteral:
-		return String
-	case *BooleanLiteral:
-		return Boolean
-	case *BinaryExpr:
-		lhs := EvalType(expr.LHS, sources, typmap)
-		rhs := EvalType(expr.RHS, sources, typmap)
-		if lhs != Unknown && rhs != Unknown {
-			if lhs < rhs {
-				return lhs
-			} else {
-				return rhs
-			}
-		} else if lhs != Unknown {
-			return lhs
-		} else {
-			return rhs
-		}
-	}
-	return Unknown
-}
-
-func FieldDimensions(sources Sources, m FieldMapper) (fields map[string]DataType, dimensions map[string]struct{}, err error) {
-	fields = make(map[string]DataType)
-	dimensions = make(map[string]struct{})
-
-	for _, src := range sources {
-		switch src := src.(type) {
-		case *Measurement:
-			f, d, err := m.FieldDimensions(src)
-			if err != nil {
-				return nil, nil, err
-			}
-
-			for k, typ := range f {
-				if _, ok := fields[k]; typ != Unknown && (!ok || typ < fields[k]) {
-					fields[k] = typ
-				}
-			}
-			for k := range d {
-				dimensions[k] = struct{}{}
-			}
-		case *SubQuery:
-			for _, f := range src.Statement.Fields {
-				k := f.Name()
-				typ := EvalType(f.Expr, src.Statement.Sources, m)
-
-				if _, ok := fields[k]; typ != Unknown && (!ok || typ < fields[k]) {
-					fields[k] = typ
-				}
-			}
-
-			for _, d := range src.Statement.Dimensions {
-				if expr, ok := d.Expr.(*VarRef); ok {
-					dimensions[expr.Val] = struct{}{}
-				}
-			}
-		}
-	}
-	return
-}
-
 // Reduce evaluates expr using the available values in valuer.
 // References that don't exist in valuer are ignored.
 func Reduce(expr Expr, valuer Valuer) Expr {
@@ -4591,43 +4022,4 @@ func (v *NowValuer) Value(key string) (interface{}, bool) {
 		return v.Now, true
 	}
 	return nil, false
-}
-
-// Zone is a method that returns the time.Location.
-func (v *NowValuer) Zone() *time.Location {
-	if v.Location != nil {
-		return v.Location
-	}
-	return time.UTC
-}
-
-// ContainsVarRef returns true if expr is a VarRef or contains one.
-func ContainsVarRef(expr Expr) bool {
-	var v containsVarRefVisitor
-	Walk(&v, expr)
-	return v.contains
-}
-
-type containsVarRefVisitor struct {
-	contains bool
-}
-
-func (v *containsVarRefVisitor) Visit(n Node) Visitor {
-	switch n.(type) {
-	case *Call:
-		return nil
-	case *VarRef:
-		v.contains = true
-	}
-	return v
-}
-
-func IsSelector(expr Expr) bool {
-	if call, ok := expr.(*Call); ok {
-		switch call.Name {
-		case "first", "last", "min", "max", "percentile", "sample", "top", "bottom":
-			return true
-		}
-	}
-	return false
 }

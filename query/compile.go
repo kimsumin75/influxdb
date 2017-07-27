@@ -1120,7 +1120,12 @@ func getTimeRange(op influxql.Token, rhs influxql.Expr, valuer influxql.Valuer) 
 	// If literal looks like a date time then parse it as a time literal.
 	if strlit, ok := rhs.(*influxql.StringLiteral); ok {
 		if strlit.IsTimeLiteral() {
-			t, err := strlit.ToTimeLiteral()
+			var loc *time.Location
+			if v, ok := valuer.(influxql.ZoneValuer); ok {
+				loc = v.Zone()
+			}
+
+			t, err := strlit.ToTimeLiteral(loc)
 			if err != nil {
 				return TimeRange{}, err
 			}
