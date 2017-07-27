@@ -109,7 +109,7 @@ func (s *subquery) link(m ShardMapper) (storage, error) {
 
 	return &subqueryEngine{
 		fields:     fields,
-		columns:    columns,
+		columns:    columns[1:],
 		dimensions: dimensions,
 		mapper:     mapper,
 	}, nil

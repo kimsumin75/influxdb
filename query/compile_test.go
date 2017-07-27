@@ -4,8 +4,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/influxdata/influxdb/influxql"
+	"github.com/influxdata/influxdb/mock"
 	"github.com/influxdata/influxdb/query"
+	"github.com/influxdata/influxdb/services/meta"
+	"github.com/influxdata/influxdb/tsdb"
 )
 
 func TestCompile_Success(t *testing.T) {
@@ -434,6 +438,132 @@ func TestCompile_ParseCondition(t *testing.T) {
 			}
 			if !tr.Max.Equal(tt.max) {
 				t.Errorf("unexpected max time: %s != %s", tr.Max, tt.max)
+			}
+		})
+	}
+}
+
+func TestCompile_ColumnNames(t *testing.T) {
+	now, err := time.Parse(time.RFC3339, "2000-01-01T00:00:00Z")
+	if err != nil {
+		t.Fatalf("unable to parse time: %s", err)
+	}
+
+	for _, tt := range []struct {
+		s       string
+		columns []string
+	}{
+		{s: `SELECT field1 FROM cpu`, columns: []string{"time", "field1"}},
+		{s: `SELECT field1, field1, field1_1 FROM cpu`, columns: []string{"time", "field1", "field1_1", "field1_1_1"}},
+		{s: `SELECT field1, field1_1, field1 FROM cpu`, columns: []string{"time", "field1", "field1_1", "field1_2"}},
+		{s: `SELECT field1, total AS field1, field1 FROM cpu`, columns: []string{"time", "field1_1", "field1", "field1_2"}},
+		{s: `SELECT time AS timestamp, field1 FROM cpu`, columns: []string{"timestamp", "field1"}},
+		{s: `SELECT mean(field1) FROM cpu`, columns: []string{"time", "mean"}},
+		{s: `SELECT * FROM cpu`, columns: []string{"time", "field1", "field2"}},
+		{s: `SELECT /2/ FROM cpu`, columns: []string{"time", "field2"}},
+		{s: `SELECT mean(*) FROM cpu`, columns: []string{"time", "mean_field1", "mean_field2"}},
+		{s: `SELECT mean(/2/) FROM cpu`, columns: []string{"time", "mean_field2"}},
+		{s: `SELECT time AS field1, field1 FROM cpu`, columns: []string{"field1", "field1_1"}},
+	} {
+		t.Run(tt.s, func(t *testing.T) {
+			stmt, err := influxql.ParseStatement(tt.s)
+			if err != nil {
+				t.Fatalf("unable to parse statement: %s", err)
+			}
+
+			opt := query.CompileOptions{Now: now}
+			c, err := query.Compile(stmt.(*influxql.SelectStatement), opt)
+			if err != nil {
+				t.Fatalf("unable to compile statement: %s", err)
+			}
+
+			linker := mock.NewLinker(func(stub *mock.LinkerStub) {
+				stub.ShardsByTimeRangeFn = func(sources influxql.Sources, tmin, tmax time.Time) (a []meta.ShardInfo, err error) {
+					return []meta.ShardInfo{{ID: 1}}, nil
+				}
+				stub.ShardGroupFn = func(ids []uint64) tsdb.ShardGroup {
+					if diff := cmp.Diff(ids, []uint64{1}); diff != "" {
+						t.Fatalf("unexpected shard ids:\n%s", diff)
+					}
+					return &mock.ShardGroup{
+						Measurements: map[string]mock.ShardMeta{
+							"cpu": {
+								Fields: map[string]influxql.DataType{
+									"field1": influxql.Float,
+									"field2": influxql.Float,
+								},
+							},
+						},
+					}
+				}
+			})
+			if _, columns, err := c.Select(linker); err != nil {
+				t.Fatalf("unable to link statement: %s", err)
+			} else if diff := cmp.Diff(tt.columns, columns); diff != "" {
+				t.Fatalf("unexpected columns:\n%s", diff)
+			}
+		})
+	}
+}
+
+func TestCompile_ColumnTypes(t *testing.T) {
+	now, err := time.Parse(time.RFC3339, "2000-01-01T00:00:00Z")
+	if err != nil {
+		t.Fatalf("unable to parse time: %s", err)
+	}
+
+	for _, tt := range []struct {
+		s       string
+		columns []string
+	}{
+		{s: `SELECT field1 FROM cpu`, columns: []string{"time", "field1"}},
+		{s: `SELECT field1, field1, field1_1 FROM cpu`, columns: []string{"time", "field1", "field1_1", "field1_1_1"}},
+		{s: `SELECT field1, field1_1, field1 FROM cpu`, columns: []string{"time", "field1", "field1_1", "field1_2"}},
+		{s: `SELECT field1, total AS field1, field1 FROM cpu`, columns: []string{"time", "field1_1", "field1", "field1_2"}},
+		{s: `SELECT time AS timestamp, field1 FROM cpu`, columns: []string{"timestamp", "field1"}},
+		{s: `SELECT mean(field1) FROM cpu`, columns: []string{"time", "mean"}},
+		{s: `SELECT * FROM cpu`, columns: []string{"time", "field1", "field2"}},
+		{s: `SELECT /2/ FROM cpu`, columns: []string{"time", "field2"}},
+		{s: `SELECT mean(*) FROM cpu`, columns: []string{"time", "mean_field1", "mean_field2"}},
+		{s: `SELECT mean(/2/) FROM cpu`, columns: []string{"time", "mean_field2"}},
+		{s: `SELECT time AS field1, field1 FROM cpu`, columns: []string{"field1", "field1_1"}},
+	} {
+		t.Run(tt.s, func(t *testing.T) {
+			stmt, err := influxql.ParseStatement(tt.s)
+			if err != nil {
+				t.Fatalf("unable to parse statement: %s", err)
+			}
+
+			opt := query.CompileOptions{Now: now}
+			c, err := query.Compile(stmt.(*influxql.SelectStatement), opt)
+			if err != nil {
+				t.Fatalf("unable to compile statement: %s", err)
+			}
+
+			linker := mock.NewLinker(func(stub *mock.LinkerStub) {
+				stub.ShardsByTimeRangeFn = func(sources influxql.Sources, tmin, tmax time.Time) (a []meta.ShardInfo, err error) {
+					return []meta.ShardInfo{{ID: 1}}, nil
+				}
+				stub.ShardGroupFn = func(ids []uint64) tsdb.ShardGroup {
+					if diff := cmp.Diff(ids, []uint64{1}); diff != "" {
+						t.Fatalf("unexpected shard ids:\n%s", diff)
+					}
+					return &mock.ShardGroup{
+						Measurements: map[string]mock.ShardMeta{
+							"cpu": {
+								Fields: map[string]influxql.DataType{
+									"field1": influxql.Float,
+									"field2": influxql.Float,
+								},
+							},
+						},
+					}
+				}
+			})
+			if _, columns, err := c.Select(linker); err != nil {
+				t.Fatalf("unable to link statement: %s", err)
+			} else if diff := cmp.Diff(tt.columns, columns); diff != "" {
+				t.Fatalf("unexpected columns:\n%s", diff)
 			}
 		})
 	}

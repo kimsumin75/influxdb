@@ -431,7 +431,7 @@ func (e *StatementExecutor) executeExplainStatement(q *influxql.ExplainStatement
 			// Add additional rows for each of the outputs.
 			for i, output := range outputs {
 				depID := edgeIDs[output.Input.Node]
-				rows = append(rows, []interface{}{id, fmt.Sprintf("%T", output), columns[i], 0.0, strconv.Itoa(depID)})
+				rows = append(rows, []interface{}{id, fmt.Sprintf("%T", output), columns[i+1], 0.0, strconv.Itoa(depID)})
 				id++
 			}
 			return models.Rows{{
@@ -513,9 +513,7 @@ func (e *StatementExecutor) executeSelectStatement(stmt *influxql.SelectStatemen
 
 	// Generate a row emitter from the iterator set.
 	em := influxql.NewEmitter(itrs, stmt.TimeAscending(), ctx.ChunkSize)
-	em.Columns = make([]string, 0, len(columns)+1)
-	em.Columns = append(em.Columns, stmt.TimeFieldName())
-	em.Columns = append(em.Columns, columns...)
+	em.Columns = columns
 	if stmt.Location != nil {
 		em.Location = stmt.Location
 	}
