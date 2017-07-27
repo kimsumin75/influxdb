@@ -166,6 +166,8 @@ func (c *compiledField) compileExpr(expr influxql.Expr, out *WriteEdge) error {
 			return c.compileCumulativeSum(expr.Args, out)
 		case "moving_average":
 			return c.compileMovingAverage(expr.Args, out)
+		case "elapsed":
+			return c.compileElapsed(expr.Args, out)
 		case "integral":
 			return c.compileIntegral(expr.Args, out)
 		case "holt_winters", "holt_winters_with_fit":
@@ -312,9 +314,12 @@ func (c *compiledField) compileSample(args []influxql.Expr, out *WriteEdge) erro
 	}
 
 	var n int
-	switch lit := args[1].(type) {
+	switch arg1 := args[1].(type) {
 	case *influxql.IntegerLiteral:
-		n = int(lit.Val)
+		if arg1.Val <= 0 {
+			return fmt.Errorf("sample window must be greater than 1, got %d", arg1.Val)
+		}
+		n = int(arg1.Val)
 	default:
 		return fmt.Errorf("expected integer argument in sample()")
 	}
@@ -410,7 +415,7 @@ func (c *compiledField) compileElapsed(args []influxql.Expr, out *WriteEdge) err
 	switch arg0 := args[0].(type) {
 	case *influxql.Call:
 		if c.global.Interval.IsZero() {
-			return fmt.Errorf("%s aggregate requires a GROUP BY interval", arg0.Name)
+			return fmt.Errorf("elapsed aggregate requires a GROUP BY interval")
 		}
 		return c.compileExpr(arg0, out)
 	default:
@@ -491,8 +496,6 @@ func (c *compiledField) compileMovingAverage(args []influxql.Expr, out *WriteEdg
 	case *influxql.IntegerLiteral:
 		if arg1.Val <= 1 {
 			return fmt.Errorf("moving_average window must be greater than 1, got %d", arg1.Val)
-		} else if int64(int(arg1.Val)) != arg1.Val {
-			return fmt.Errorf("moving_average window too large, got %d", arg1.Val)
 		}
 		windowSize = int(arg1.Val)
 	default:
@@ -1000,6 +1003,17 @@ func (c *compiledStatement) compileDimensions(stmt *influxql.SelectStatement) er
 						}
 						now := c.Options.Now
 						c.Interval.Offset = now.Sub(now.Truncate(c.Interval.Duration))
+					case *influxql.StringLiteral:
+						// If literal looks like a date time then parse it as a time literal.
+						if lit.IsTimeLiteral() {
+							t, err := lit.ToTimeLiteral()
+							if err != nil {
+								return err
+							}
+							c.Interval.Offset = t.Val.Sub(t.Val.Truncate(c.Interval.Duration))
+						} else {
+							return errors.New("time dimension offset must be duration or now()")
+						}
 					default:
 						return errors.New("time dimension offset must be duration or now()")
 					}
