@@ -4,10 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
-
-	"sort"
 
 	"github.com/influxdata/influxdb/influxql"
 )

@@ -1,8 +1,6 @@
 package query
 
-import (
-	"github.com/influxdata/influxdb/influxql"
-)
+import "github.com/influxdata/influxdb/influxql"
 
 type Symbol interface {
 	// resolve will resolve the Symbol with a Node and attach it to the WriteEdge.

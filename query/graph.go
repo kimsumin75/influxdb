@@ -1,13 +1,12 @@
 package query
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"strings"
 	"sync"
 	"time"
-
-	"bytes"
 
 	"github.com/influxdata/influxdb/influxql"
 )
