@@ -407,13 +407,20 @@ func (e *StatementExecutor) executeExplainStatement(q *influxql.ExplainStatement
 		return nil, err
 	}
 
-	plan := query.NewPlan()
-	plan.DryRun = true
-	plan.MetaClient = e.MetaClient
-	plan.ShardMapper = e.ShardMapper
-	outputs, columns, err := c.Select(plan)
+	linker := &query.Linker{
+		MetaClient:  e.MetaClient,
+		TSDBStore:   e.TSDBStore,
+		ShardMapper: e.ShardMapper,
+	}
+	outputs, columns, err := c.Select(linker)
 	if err != nil {
 		return nil, err
+	}
+
+	plan := query.NewPlan()
+	plan.DryRun = true
+	for _, out := range outputs {
+		plan.AddTarget(out)
 	}
 
 	id := 1
@@ -644,13 +651,20 @@ func (e *StatementExecutor) createIterators(stmt *influxql.SelectStatement, ctx 
 		return nil, nil, err
 	}
 
-	plan := query.NewPlan()
-	plan.MetaClient = e.MetaClient
-	plan.TSDBStore = e.TSDBStore
-	plan.ShardMapper = e.ShardMapper
-	edges, cols, err := c.Select(plan)
+	linker := &query.Linker{
+		MetaClient:  e.MetaClient,
+		TSDBStore:   e.TSDBStore,
+		ShardMapper: e.ShardMapper,
+	}
+	outputs, columns, err := c.Select(linker)
 	if err != nil {
 		return nil, nil, err
+	}
+
+	// Add all of the field outputs to the plan as targets.
+	plan := query.NewPlan()
+	for _, out := range outputs {
+		plan.AddTarget(out)
 	}
 
 	for {
@@ -664,8 +678,8 @@ func (e *StatementExecutor) createIterators(stmt *influxql.SelectStatement, ctx 
 		plan.NodeFinished(node)
 	}
 
-	itrs := make([]influxql.Iterator, len(edges))
-	for i, out := range edges {
+	itrs := make([]influxql.Iterator, len(outputs))
+	for i, out := range outputs {
 		itrs[i] = out.Iterator()
 	}
 
@@ -673,7 +687,7 @@ func (e *StatementExecutor) createIterators(stmt *influxql.SelectStatement, ctx 
 		monitor := influxql.PointLimitMonitor(itrs, influxql.DefaultStatsInterval, e.MaxSelectPointN)
 		ctx.Query.Monitor(monitor)
 	}
-	return itrs, cols, nil
+	return itrs, columns, nil
 }
 
 func (e *StatementExecutor) executeShowContinuousQueriesStatement(stmt *influxql.ShowContinuousQueriesStatement) (models.Rows, error) {

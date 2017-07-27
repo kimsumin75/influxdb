@@ -74,7 +74,7 @@ type compiledStatement struct {
 }
 
 type CompiledStatement interface {
-	Select(plan *Plan) ([]*ReadEdge, []string, error)
+	Select(linker *Linker) ([]*ReadEdge, []string, error)
 }
 
 func newCompiler(opt CompileOptions) *compiledStatement {
@@ -100,6 +100,15 @@ type wildcard struct {
 	TypeFilters map[influxql.DataType]struct{}
 }
 
+// Field is the final name and read edge of the selected field.
+type Field struct {
+	// Name is the field's name.
+	Name string
+
+	// Output contains the read edge for this field.
+	Output *ReadEdge
+}
+
 // compiledField holds the compilation state for a field.
 type compiledField struct {
 	// This holds the global state from the compiled statement.
@@ -108,7 +117,7 @@ type compiledField struct {
 	// Field contains the original field associated with this field.
 	Field *influxql.Field
 
-	// Output contains the output edge for this field.
+	// Output contains the read edge for this field.
 	Output *ReadEdge
 
 	// Symbols contains the symbol table for this field.
@@ -1188,9 +1197,9 @@ func getTimeRange(op influxql.Token, rhs influxql.Expr, valuer influxql.Valuer) 
 	return timeRange, nil
 }
 
-func (c *compiledStatement) Select(plan *Plan) ([]*ReadEdge, []string, error) {
+func (c *compiledStatement) Select(linker *Linker) ([]*ReadEdge, []string, error) {
 	// Link the compiled statements to the storage layer.
-	fields, columns, err := c.link(plan.ShardMapper)
+	fields, columns, err := c.link(linker.ShardMapper)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1198,11 +1207,6 @@ func (c *compiledStatement) Select(plan *Plan) ([]*ReadEdge, []string, error) {
 	outputs := make([]*ReadEdge, len(fields))
 	for i, f := range fields {
 		outputs[i] = f.Output
-	}
-
-	// Add all of the field outputs to the plan as targets.
-	for _, out := range outputs {
-		plan.AddTarget(out)
 	}
 	return outputs, columns, nil
 }
