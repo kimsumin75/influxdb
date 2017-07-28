@@ -1138,7 +1138,13 @@ func ParseCondition(cond influxql.Expr, valuer influxql.Valuer) (influxql.Expr, 
 		}
 		return cond, TimeRange{}, nil
 	case *influxql.ParenExpr:
-		return ParseCondition(cond.Expr, valuer)
+		expr, timeRange, err := ParseCondition(cond.Expr, valuer)
+		if err != nil {
+			return nil, TimeRange{}, err
+		} else if expr == nil {
+			return nil, timeRange, nil
+		}
+		return &influxql.ParenExpr{Expr: expr}, timeRange, nil
 	default:
 		return nil, TimeRange{}, fmt.Errorf("invalid condition expression: %s", cond)
 	}
