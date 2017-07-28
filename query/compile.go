@@ -13,6 +13,9 @@ import (
 
 type CompileOptions struct {
 	Now time.Time
+
+	// Select statement limits.
+	MaxSelectBucketsN int
 }
 
 type compiledStatement struct {
@@ -841,6 +844,22 @@ func (c *compiledStatement) validateDimensions() error {
 	return nil
 }
 
+// validateLimits validates the compiler set limits to prevent potentially costly queries.
+func (c *compiledStatement) validateLimits() error {
+	if c.Options.MaxSelectBucketsN > 0 && !c.Interval.IsZero() {
+		// Determine the start and end time matched to the interval (may not match the actual times).
+		min := c.TimeRange.Min.Truncate(c.Interval.Duration)
+		max := c.TimeRange.Max.Truncate(c.Interval.Duration)
+
+		// Determine the number of buckets by finding the time span and dividing by the interval.
+		buckets := int64(max.Sub(min)) / int64(c.Interval.Duration)
+		if int(buckets) > c.Options.MaxSelectBucketsN {
+			return fmt.Errorf("max-select-buckets limit exceeded: (%d/%d)", buckets, c.Options.MaxSelectBucketsN)
+		}
+	}
+	return nil
+}
+
 func Compile(stmt *influxql.SelectStatement, opt CompileOptions) (CompiledStatement, error) {
 	// Compile each of the expressions.
 	c := newCompiler(opt)
@@ -861,6 +880,9 @@ func (c *compiledStatement) compile(stmt *influxql.SelectStatement) error {
 		return err
 	}
 	if err := c.validateDimensions(); err != nil {
+		return err
+	}
+	if err := c.validateLimits(); err != nil {
 		return err
 	}
 
@@ -893,7 +915,7 @@ func (c *compiledStatement) prepare(stmt *influxql.SelectStatement) error {
 	c.Ascending = stmt.TimeAscending()
 
 	// Retrieve the condition expression and the time range.
-	valuer := influxql.NowValuer{Now: c.Options.Now}
+	valuer := influxql.NowValuer{Now: c.Options.Now, Location: stmt.Location}
 	if cond, timeRange, err := ParseCondition(stmt.Condition, &valuer); err != nil {
 		return err
 	} else {
@@ -1024,7 +1046,7 @@ func (c *compiledStatement) compileDimensions(stmt *influxql.SelectStatement) er
 					case *influxql.StringLiteral:
 						// If literal looks like a date time then parse it as a time literal.
 						if lit.IsTimeLiteral() {
-							t, err := lit.ToTimeLiteral()
+							t, err := lit.ToTimeLiteral(stmt.Location)
 							if err != nil {
 								return err
 							}

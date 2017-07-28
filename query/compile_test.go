@@ -9,7 +9,6 @@ import (
 	"github.com/influxdata/influxdb/mock"
 	"github.com/influxdata/influxdb/query"
 	"github.com/influxdata/influxdb/services/meta"
-	"github.com/influxdata/influxdb/tsdb"
 )
 
 func TestCompile_Success(t *testing.T) {
@@ -381,7 +380,7 @@ func TestCompile_ColumnNames(t *testing.T) {
 				stub.ShardsByTimeRangeFn = func(sources influxql.Sources, tmin, tmax time.Time) (a []meta.ShardInfo, err error) {
 					return []meta.ShardInfo{{ID: 1}}, nil
 				}
-				stub.ShardGroupFn = func(ids []uint64) tsdb.ShardGroup {
+				stub.ShardGroupFn = func(ids []uint64) query.ShardGroup {
 					if diff := cmp.Diff(ids, []uint64{1}); diff != "" {
 						t.Fatalf("unexpected shard ids:\n%s", diff)
 					}
@@ -444,7 +443,7 @@ func TestCompile_ColumnTypes(t *testing.T) {
 				stub.ShardsByTimeRangeFn = func(sources influxql.Sources, tmin, tmax time.Time) (a []meta.ShardInfo, err error) {
 					return []meta.ShardInfo{{ID: 1}}, nil
 				}
-				stub.ShardGroupFn = func(ids []uint64) tsdb.ShardGroup {
+				stub.ShardGroupFn = func(ids []uint64) query.ShardGroup {
 					if diff := cmp.Diff(ids, []uint64{1}); diff != "" {
 						t.Fatalf("unexpected shard ids:\n%s", diff)
 					}

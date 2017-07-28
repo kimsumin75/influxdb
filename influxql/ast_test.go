@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/influxdata/influxdb/influxql"
+	"github.com/influxdata/influxdb/query"
 )
 
 func BenchmarkQuery_String(b *testing.B) {
@@ -362,86 +363,6 @@ func TestBinaryExprName(t *testing.T) {
 		default:
 			t.Errorf("%d. unexpected expr type: %T", i, expr)
 		}
-	}
-}
-
-// Ensure the time range of an expression can be extracted.
-func TestTimeRange(t *testing.T) {
-	for i, tt := range []struct {
-		expr          string
-		min, max, err string
-		loc           string
-	}{
-		// LHS VarRef
-		{expr: `time > '2000-01-01 00:00:00'`, min: `2000-01-01T00:00:00.000000001Z`, max: `0001-01-01T00:00:00Z`},
-		{expr: `time >= '2000-01-01 00:00:00'`, min: `2000-01-01T00:00:00Z`, max: `0001-01-01T00:00:00Z`},
-		{expr: `time < '2000-01-01 00:00:00'`, min: `0001-01-01T00:00:00Z`, max: `1999-12-31T23:59:59.999999999Z`},
-		{expr: `time <= '2000-01-01 00:00:00'`, min: `0001-01-01T00:00:00Z`, max: `2000-01-01T00:00:00Z`},
-
-		// RHS VarRef
-		{expr: `'2000-01-01 00:00:00' > time`, min: `0001-01-01T00:00:00Z`, max: `1999-12-31T23:59:59.999999999Z`},
-		{expr: `'2000-01-01 00:00:00' >= time`, min: `0001-01-01T00:00:00Z`, max: `2000-01-01T00:00:00Z`},
-		{expr: `'2000-01-01 00:00:00' < time`, min: `2000-01-01T00:00:00.000000001Z`, max: `0001-01-01T00:00:00Z`},
-		{expr: `'2000-01-01 00:00:00' <= time`, min: `2000-01-01T00:00:00Z`, max: `0001-01-01T00:00:00Z`},
-
-		// number literal
-		{expr: `time < 10`, min: `0001-01-01T00:00:00Z`, max: `1970-01-01T00:00:00.000000009Z`},
-
-		// Equality
-		{expr: `time = '2000-01-01 00:00:00'`, min: `2000-01-01T00:00:00Z`, max: `2000-01-01T00:00:00Z`},
-
-		// Multiple time expressions.
-		{expr: `time >= '2000-01-01 00:00:00' AND time < '2000-01-02 00:00:00'`, min: `2000-01-01T00:00:00Z`, max: `2000-01-01T23:59:59.999999999Z`},
-
-		// Min/max crossover
-		{expr: `time >= '2000-01-01 00:00:00' AND time <= '1999-01-01 00:00:00'`, min: `2000-01-01T00:00:00Z`, max: `1999-01-01T00:00:00Z`},
-
-		// Absolute time
-		{expr: `time = 1388534400s`, min: `2014-01-01T00:00:00Z`, max: `2014-01-01T00:00:00Z`},
-
-		// Non-comparative expressions.
-		{expr: `time`, min: `0001-01-01T00:00:00Z`, max: `0001-01-01T00:00:00Z`},
-		{expr: `time + 2`, min: `0001-01-01T00:00:00Z`, max: `0001-01-01T00:00:00Z`},
-		{expr: `time - '2000-01-01 00:00:00'`, min: `0001-01-01T00:00:00Z`, max: `0001-01-01T00:00:00Z`},
-		{expr: `time AND '2000-01-01 00:00:00'`, min: `0001-01-01T00:00:00Z`, max: `0001-01-01T00:00:00Z`},
-
-		// Invalid time expressions.
-		{expr: `time > "2000-01-01 00:00:00"`, min: `0001-01-01T00:00:00Z`, max: `0001-01-01T00:00:00Z`, err: `invalid operation: time and *influxql.VarRef are not compatible`},
-		{expr: `time > '2262-04-11 23:47:17'`, min: `0001-01-01T00:00:00Z`, max: `0001-01-01T00:00:00Z`, err: `time 2262-04-11T23:47:17Z overflows time literal`},
-		{expr: `time > '1677-09-20 19:12:43'`, min: `0001-01-01T00:00:00Z`, max: `0001-01-01T00:00:00Z`, err: `time 1677-09-20T19:12:43Z underflows time literal`},
-
-		// Time zone expressions.
-		{expr: `time >= '2000-01-01'`, loc: `America/Los_Angeles`, min: `2000-01-01T00:00:00-08:00`, max: `0001-01-01T00:00:00Z`},
-		{expr: `time <= '2000-01-01'`, loc: `America/Los_Angeles`, min: `0001-01-01T00:00:00Z`, max: `2000-01-01T00:00:00-08:00`},
-		{expr: `time >= '2000-01-01 03:17:00'`, loc: `America/Los_Angeles`, min: `2000-01-01T03:17:00-08:00`, max: `0001-01-01T00:00:00Z`},
-		{expr: `time <= '2000-01-01 03:17:00'`, loc: `America/Los_Angeles`, min: `0001-01-01T00:00:00Z`, max: `2000-01-01T03:17:00-08:00`},
-	} {
-		t.Run(tt.expr, func(t *testing.T) {
-			// Load the time zone if one was specified.
-			var loc *time.Location
-			if tt.loc != "" {
-				l, err := time.LoadLocation(tt.loc)
-				if err != nil {
-					t.Fatalf("unable to load time zone %s: %s", tt.loc, err)
-				}
-				loc = l
-			}
-
-			// Extract time range.
-			expr := MustParseExpr(tt.expr)
-			min, max, err := influxql.TimeRange(expr, loc)
-
-			// Compare with expected min/max.
-			if min := min.Format(time.RFC3339Nano); tt.min != min {
-				t.Fatalf("%d. %s: unexpected min:\n\nexp=%s\n\ngot=%s\n\n", i, tt.expr, tt.min, min)
-			}
-			if max := max.Format(time.RFC3339Nano); tt.max != max {
-				t.Fatalf("%d. %s: unexpected max:\n\nexp=%s\n\ngot=%s\n\n", i, tt.expr, tt.max, max)
-			}
-			if (err != nil && err.Error() != tt.err) || (err == nil && tt.err != "") {
-				t.Fatalf("%d. %s: unexpected error:\n\nexp=%s\n\ngot=%s\n\n", i, tt.expr, tt.err, err)
-			}
-		})
 	}
 }
 
@@ -1180,11 +1101,11 @@ func (o Valuer) Value(key string) (v interface{}, ok bool) {
 
 // MustTimeRange will parse a time range. Panic on error.
 func MustTimeRange(expr influxql.Expr) (min, max time.Time) {
-	min, max, err := influxql.TimeRange(expr, nil)
+	_, timeRange, err := query.ParseCondition(expr, nil)
 	if err != nil {
 		panic(err)
 	}
-	return min, max
+	return timeRange.Min, timeRange.Max
 }
 
 // mustParseTime parses an IS0-8601 string. Panic on error.

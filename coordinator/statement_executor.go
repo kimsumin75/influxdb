@@ -602,53 +602,15 @@ func (e *StatementExecutor) executeSelectStatement(stmt *influxql.SelectStatemen
 func (e *StatementExecutor) createIterators(stmt *influxql.SelectStatement, ctx *influxql.ExecutionContext) ([]influxql.Iterator, []string, error) {
 	// It is important to "stamp" this time so that everywhere we evaluate `now()` in the statement is EXACTLY the same `now`
 	now := time.Now().UTC()
-	opt := influxql.SelectOptions{
-		InterruptCh: ctx.InterruptCh,
-		NodeID:      ctx.ExecutionOptions.NodeID,
-		MaxSeriesN:  e.MaxSelectSeriesN,
-		Authorizer:  ctx.Authorizer,
-	}
-
-	// Replace instances of "now()" with the current time, and check the resultant times.
-	nowValuer := influxql.NowValuer{Now: now, Location: stmt.Location}
-	stmt = stmt.Reduce(&nowValuer)
-
-	var err error
-	opt.MinTime, opt.MaxTime, err = influxql.TimeRange(stmt.Condition, stmt.Location)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	if opt.MaxTime.IsZero() {
-		opt.MaxTime = time.Unix(0, influxql.MaxTime)
-	}
-	if opt.MinTime.IsZero() {
-		opt.MinTime = time.Unix(0, influxql.MinTime).UTC()
-	}
 
 	// Rewrite any regex conditions that could make use of the index.
 	stmt.RewriteRegexConditions()
 
-	if e.MaxSelectBucketsN > 0 && !stmt.IsRawQuery {
-		interval, err := stmt.GroupByInterval()
-		if err != nil {
-			return nil, nil, err
-		}
-
-		if interval > 0 {
-			// Determine the start and end time matched to the interval (may not match the actual times).
-			min := opt.MinTime.Truncate(interval)
-			max := opt.MaxTime.Truncate(interval).Add(interval)
-
-			// Determine the number of buckets by finding the time span and dividing by the interval.
-			buckets := int64(max.Sub(min)) / int64(interval)
-			if int(buckets) > e.MaxSelectBucketsN {
-				return nil, nil, fmt.Errorf("max-select-buckets limit exceeded: (%d/%d)", buckets, e.MaxSelectBucketsN)
-			}
-		}
+	opt := query.CompileOptions{
+		Now:               now,
+		MaxSelectBucketsN: e.MaxSelectBucketsN,
 	}
-
-	c, err := query.Compile(stmt, query.CompileOptions{})
+	c, err := query.Compile(stmt, opt)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1247,7 +1209,7 @@ type TSDBStore interface {
 	MeasurementNames(database string, cond influxql.Expr) ([][]byte, error)
 	TagValues(database string, cond influxql.Expr) ([]tsdb.TagValues, error)
 
-	ShardGroup(ids []uint64) tsdb.ShardGroup
+	ShardGroup(ids []uint64) query.ShardGroup
 }
 
 var _ TSDBStore = LocalTSDBStore{}

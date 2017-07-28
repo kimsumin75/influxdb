@@ -4,14 +4,14 @@ import (
 	"regexp"
 
 	"github.com/influxdata/influxdb/influxql"
-	"github.com/influxdata/influxdb/tsdb"
+	"github.com/influxdata/influxdb/query"
 )
 
 type TSDBStore struct {
-	ShardGroupFn func(ids []uint64) tsdb.ShardGroup
+	ShardGroupFn func(ids []uint64) query.ShardGroup
 }
 
-func (t *TSDBStore) ShardGroup(ids []uint64) tsdb.ShardGroup {
+func (t *TSDBStore) ShardGroup(ids []uint64) query.ShardGroup {
 	return t.ShardGroupFn(ids)
 }
 

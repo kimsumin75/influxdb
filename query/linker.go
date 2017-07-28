@@ -1,12 +1,19 @@
 package query
 
 import (
+	"regexp"
 	"time"
 
 	"github.com/influxdata/influxdb/influxql"
 	"github.com/influxdata/influxdb/services/meta"
-	"github.com/influxdata/influxdb/tsdb"
 )
+
+type ShardGroup interface {
+	MeasurementsByRegex(re *regexp.Regexp) []string
+	FieldDimensions(measurements []string) (fields map[string]influxql.DataType, dimensions map[string]struct{}, err error)
+	MapType(measurement, field string) influxql.DataType
+	CreateIterator(measurement string, opt influxql.IteratorOptions) (influxql.Iterator, error)
+}
 
 type Linker struct {
 	MetaClient interface {
@@ -14,7 +21,7 @@ type Linker struct {
 	}
 
 	TSDBStore interface {
-		ShardGroup(ids []uint64) tsdb.ShardGroup
+		ShardGroup(ids []uint64) ShardGroup
 	}
 
 	ShardMapper interface {

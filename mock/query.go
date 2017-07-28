@@ -6,12 +6,11 @@ import (
 	"github.com/influxdata/influxdb/influxql"
 	"github.com/influxdata/influxdb/query"
 	"github.com/influxdata/influxdb/services/meta"
-	"github.com/influxdata/influxdb/tsdb"
 )
 
 type Database struct {
 	Measurements []string
-	Shard        tsdb.ShardGroup
+	Shard        query.ShardGroup
 }
 
 func (d *Database) CreateIterator(opt influxql.IteratorOptions) (influxql.Iterator, error) {
@@ -47,7 +46,7 @@ func (d *Database) Close() error {
 
 type LinkerStub struct {
 	ShardsByTimeRangeFn func(sources influxql.Sources, tmin, tmax time.Time) (a []meta.ShardInfo, err error)
-	ShardGroupFn        func(ids []uint64) tsdb.ShardGroup
+	ShardGroupFn        func(ids []uint64) query.ShardGroup
 	MapShardsFn         func(m *influxql.Measurement, opt *influxql.SelectOptions) (query.Database, error)
 }
 
@@ -58,7 +57,7 @@ func (l *LinkerStub) ShardsByTimeRange(sources influxql.Sources, tmin, tmax time
 	return nil, nil
 }
 
-func (l *LinkerStub) ShardGroup(ids []uint64) tsdb.ShardGroup {
+func (l *LinkerStub) ShardGroup(ids []uint64) query.ShardGroup {
 	if l.ShardGroupFn != nil {
 		return l.ShardGroupFn(ids)
 	}

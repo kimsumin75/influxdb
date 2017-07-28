@@ -6,7 +6,6 @@ import (
 	"github.com/influxdata/influxdb/influxql"
 	"github.com/influxdata/influxdb/query"
 	"github.com/influxdata/influxdb/services/meta"
-	"github.com/influxdata/influxdb/tsdb"
 )
 
 // ShardMapper retrieves and maps shards into an IteratorCreator that can later be
@@ -22,7 +21,7 @@ type LocalShardMapper struct {
 	}
 
 	TSDBStore interface {
-		ShardGroup(ids []uint64) tsdb.ShardGroup
+		ShardGroup(ids []uint64) query.ShardGroup
 	}
 }
 
@@ -60,7 +59,7 @@ func (e *LocalShardMapper) MapShards(m *influxql.Measurement, opt *influxql.Sele
 
 // ShardMapper maps data sources to a list of shard information.
 type LocalShardMapping struct {
-	Shard        tsdb.ShardGroup
+	Shard        query.ShardGroup
 	Measurements []string
 }
 
