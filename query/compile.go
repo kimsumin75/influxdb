@@ -250,6 +250,16 @@ func (c *compiledField) compileSymbol(name string, field influxql.Expr, out *Wri
 func (c *compiledField) compileFunction(expr *influxql.Call, out *WriteEdge) error {
 	// Create the function call and send its output to the write edge.
 	c.global.FunctionCalls = append(c.global.FunctionCalls, out.Output)
+
+	// Normalize the interval of the output.
+	interval := &Interval{
+		TimeRange: c.global.TimeRange,
+		Interval:  c.global.Interval,
+		Output:    out,
+	}
+	out, interval.Input = out.Chain(interval)
+
+	// Determine the function call and create the necessary node.
 	switch expr.Name {
 	case "count", "min", "max", "sum", "first", "last", "mean":
 		call := &FunctionCall{
@@ -995,6 +1005,22 @@ func (c *compiledStatement) compileFields(stmt *influxql.SelectStatement) error 
 		c.Fields = append(c.Fields, field)
 		if err := field.compileExpr(f.Expr, in); err != nil {
 			return err
+		}
+	}
+
+	// If this is a selector and has no interval, remove any interval nodes
+	// that may exist. This does not apply if we are using top() or bottom().
+	if c.Interval.IsZero() && c.OnlySelectors && len(c.FunctionCalls) == 1 && c.TopBottomFunction == "" {
+		for _, f := range c.Fields {
+			if err := Walk(f.Output.Node, VisitorFunc(func(n Node) (bool, error) {
+				switch n := n.(type) {
+				case *Interval:
+					n.Output.Output.Input, n.Input.Input.Output = n.Input.Input, n.Output.Output
+				}
+				return true, nil
+			})); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

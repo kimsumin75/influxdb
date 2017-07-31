@@ -978,6 +978,41 @@ func (c *BinaryExpr) Type() influxql.DataType {
 	}
 }
 
+var _ Node = &Interval{}
+
+type Interval struct {
+	TimeRange TimeRange
+	Interval  influxql.Interval
+	Input     *ReadEdge
+	Output    *WriteEdge
+}
+
+func (i *Interval) Description() string {
+	return fmt.Sprintf("normalize time values")
+}
+
+func (i *Interval) Inputs() []*ReadEdge   { return []*ReadEdge{i.Input} }
+func (i *Interval) Outputs() []*WriteEdge { return []*WriteEdge{i.Output} }
+
+func (i *Interval) Execute() error {
+	opt := influxql.IteratorOptions{
+		StartTime: i.TimeRange.Min.UnixNano(),
+		EndTime:   i.TimeRange.Max.UnixNano(),
+		Interval:  i.Interval,
+	}
+
+	input := i.Input.Iterator()
+	i.Output.SetIterator(influxql.NewIntervalIterator(input, opt))
+	return nil
+}
+
+func (i *Interval) Type() influxql.DataType {
+	if n := i.Input.Input.Node; n != nil {
+		return n.Type()
+	}
+	return influxql.Unknown
+}
+
 var _ Node = &Limit{}
 
 type Limit struct {
@@ -1033,4 +1068,39 @@ func (n *Nil) Execute() error {
 
 func (n *Nil) Type() influxql.DataType {
 	return influxql.Unknown
+}
+
+// Visitor visits every node in a graph.
+type Visitor interface {
+	// Visit is called for every node in the graph.
+	// If false is returned from the function, the inputs of the
+	// current node are not visited. If an error is returned,
+	// processing also stops and the error is returned to Walk.
+	Visit(n Node) (ok bool, err error)
+}
+
+type VisitorFunc func(n Node) (ok bool, err error)
+
+func (fn VisitorFunc) Visit(n Node) (ok bool, err error) {
+	return fn(n)
+}
+
+// Walk iterates through all of the nodes going up the tree.
+// If a node is referenced as the input from multiple edges, it may be
+// visited multiple times.
+func Walk(n Node, v Visitor) error {
+	if ok, err := v.Visit(n); err != nil {
+		return err
+	} else if !ok {
+		return nil
+	}
+
+	for _, input := range n.Inputs() {
+		if input.Input.Node != nil {
+			if err := Walk(input.Input.Node, v); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
