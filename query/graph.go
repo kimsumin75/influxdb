@@ -705,8 +705,13 @@ func (hw *HoltWinters) Type() influxql.DataType {
 }
 
 type Distinct struct {
-	Input  *ReadEdge
-	Output *WriteEdge
+	Dimensions []string
+	GroupBy    map[string]struct{}
+	Interval   influxql.Interval
+	TimeRange  TimeRange
+	Ascending  bool
+	Input      *ReadEdge
+	Output     *WriteEdge
 }
 
 func (d *Distinct) Description() string {
@@ -718,8 +723,12 @@ func (d *Distinct) Outputs() []*WriteEdge { return []*WriteEdge{d.Output} }
 
 func (d *Distinct) Execute() error {
 	opt := influxql.IteratorOptions{
-		StartTime: influxql.MinTime,
-		EndTime:   influxql.MaxTime,
+		Dimensions: d.Dimensions,
+		GroupBy:    d.GroupBy,
+		Interval:   d.Interval,
+		Ascending:  d.Ascending,
+		StartTime:  d.TimeRange.Min.UnixNano(),
+		EndTime:    d.TimeRange.Max.UnixNano(),
 	}
 	itr, err := influxql.NewDistinctIterator(d.Input.Iterator(), opt)
 	if err != nil {

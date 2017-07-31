@@ -656,8 +656,23 @@ func (c *compiledField) compileDistinct(args []influxql.Expr, out *WriteEdge, ne
 		return errors.New("expected field argument in distinct()")
 	}
 
+	// Normalize the interval of the distinct call.
+	interval := &Interval{
+		TimeRange: c.global.TimeRange,
+		Interval:  c.global.Interval,
+		Output:    out,
+	}
+	out, interval.Input = out.Chain(interval)
+
 	// Add the distinct node to the graph.
-	d := &Distinct{Output: out}
+	d := &Distinct{
+		Dimensions: c.global.Dimensions,
+		GroupBy:    c.global.Tags,
+		Interval:   c.global.Interval,
+		TimeRange:  c.global.TimeRange,
+		Ascending:  c.global.Ascending,
+		Output:     out,
+	}
 	if !nested {
 		// Add as a function call if this is not nested.
 		c.global.FunctionCalls = append(c.global.FunctionCalls, out.Output)
