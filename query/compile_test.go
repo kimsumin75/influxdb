@@ -578,6 +578,7 @@ func TestSelect(t *testing.T) {
 		expr   string
 		itrs   []influxql.Iterator
 		points [][]influxql.Point
+		err    string
 	}{
 		{
 			name: "Min",
@@ -709,6 +710,78 @@ func TestSelect(t *testing.T) {
 				{&influxql.BooleanPoint{Name: "cpu", Tags: mock.ParseTags("host=B"), Time: 0 * Second, Value: false}},
 			},
 		},
+		{
+			name: "Mean_Float",
+			s:    `SELECT mean(value) FROM cpu WHERE time >= '1970-01-01T00:00:00Z' AND time < '1970-01-02T00:00:00Z' GROUP BY time(10s), host fill(none)`,
+			expr: `value`,
+			itrs: []influxql.Iterator{
+				&mock.FloatIterator{Points: []influxql.FloatPoint{
+					{Name: "cpu", Tags: mock.ParseTags("region=west,host=A"), Time: 0 * Second, Value: 20},
+					{Name: "cpu", Tags: mock.ParseTags("region=west,host=A"), Time: 11 * Second, Value: 3},
+					{Name: "cpu", Tags: mock.ParseTags("region=west,host=A"), Time: 31 * Second, Value: 100},
+				}},
+				&mock.FloatIterator{Points: []influxql.FloatPoint{
+					{Name: "cpu", Tags: mock.ParseTags("region=west,host=B"), Time: 5 * Second, Value: 10},
+					{Name: "cpu", Tags: mock.ParseTags("region=west,host=B"), Time: 50 * Second, Value: 1},
+					{Name: "cpu", Tags: mock.ParseTags("region=west,host=B"), Time: 51 * Second, Value: 2},
+					{Name: "cpu", Tags: mock.ParseTags("region=west,host=B"), Time: 52 * Second, Value: 4},
+					{Name: "cpu", Tags: mock.ParseTags("region=west,host=B"), Time: 53 * Second, Value: 4},
+					{Name: "cpu", Tags: mock.ParseTags("region=west,host=B"), Time: 53 * Second, Value: 5},
+				}},
+				&mock.FloatIterator{Points: []influxql.FloatPoint{
+					{Name: "cpu", Tags: mock.ParseTags("region=east,host=A"), Time: 9 * Second, Value: 19},
+					{Name: "cpu", Tags: mock.ParseTags("region=east,host=A"), Time: 10 * Second, Value: 2},
+				}},
+			},
+			points: [][]influxql.Point{
+				{&influxql.FloatPoint{Name: "cpu", Tags: mock.ParseTags("host=A"), Time: 0 * Second, Value: 19.5, Aggregated: 2}},
+				{&influxql.FloatPoint{Name: "cpu", Tags: mock.ParseTags("host=A"), Time: 10 * Second, Value: 2.5, Aggregated: 2}},
+				{&influxql.FloatPoint{Name: "cpu", Tags: mock.ParseTags("host=A"), Time: 30 * Second, Value: 100, Aggregated: 1}},
+				{&influxql.FloatPoint{Name: "cpu", Tags: mock.ParseTags("host=B"), Time: 0 * Second, Value: 10, Aggregated: 1}},
+				{&influxql.FloatPoint{Name: "cpu", Tags: mock.ParseTags("host=B"), Time: 50 * Second, Value: 3.2, Aggregated: 5}},
+			},
+		},
+		{
+			name: "Mean_Integer",
+			s:    `SELECT mean(value) FROM cpu WHERE time >= '1970-01-01T00:00:00Z' AND time < '1970-01-02T00:00:00Z' GROUP BY time(10s), host fill(none)`,
+			expr: `value`,
+			itrs: []influxql.Iterator{
+				&mock.IntegerIterator{Points: []influxql.IntegerPoint{
+					{Name: "cpu", Tags: mock.ParseTags("region=west,host=A"), Time: 0 * Second, Value: 20},
+					{Name: "cpu", Tags: mock.ParseTags("region=west,host=A"), Time: 11 * Second, Value: 3},
+					{Name: "cpu", Tags: mock.ParseTags("region=west,host=A"), Time: 31 * Second, Value: 100},
+				}},
+				&mock.IntegerIterator{Points: []influxql.IntegerPoint{
+					{Name: "cpu", Tags: mock.ParseTags("region=west,host=B"), Time: 5 * Second, Value: 10},
+					{Name: "cpu", Tags: mock.ParseTags("region=west,host=B"), Time: 50 * Second, Value: 1},
+					{Name: "cpu", Tags: mock.ParseTags("region=west,host=B"), Time: 51 * Second, Value: 2},
+					{Name: "cpu", Tags: mock.ParseTags("region=west,host=B"), Time: 52 * Second, Value: 4},
+					{Name: "cpu", Tags: mock.ParseTags("region=west,host=B"), Time: 53 * Second, Value: 4},
+					{Name: "cpu", Tags: mock.ParseTags("region=west,host=B"), Time: 53 * Second, Value: 5},
+				}},
+				&mock.IntegerIterator{Points: []influxql.IntegerPoint{
+					{Name: "cpu", Tags: mock.ParseTags("region=east,host=A"), Time: 9 * Second, Value: 19},
+					{Name: "cpu", Tags: mock.ParseTags("region=east,host=A"), Time: 10 * Second, Value: 2},
+				}},
+			},
+			points: [][]influxql.Point{
+				{&influxql.FloatPoint{Name: "cpu", Tags: mock.ParseTags("host=A"), Time: 0 * Second, Value: 19.5, Aggregated: 2}},
+				{&influxql.FloatPoint{Name: "cpu", Tags: mock.ParseTags("host=A"), Time: 10 * Second, Value: 2.5, Aggregated: 2}},
+				{&influxql.FloatPoint{Name: "cpu", Tags: mock.ParseTags("host=A"), Time: 30 * Second, Value: 100, Aggregated: 1}},
+				{&influxql.FloatPoint{Name: "cpu", Tags: mock.ParseTags("host=B"), Time: 0 * Second, Value: 10, Aggregated: 1}},
+				{&influxql.FloatPoint{Name: "cpu", Tags: mock.ParseTags("host=B"), Time: 50 * Second, Value: 3.2, Aggregated: 5}},
+			},
+		},
+		{
+			name: "Mean_String",
+			s:    `SELECT mean(value) FROM cpu WHERE time >= '1970-01-01T00:00:00Z' AND time < '1970-01-02T00:00:00Z' GROUP BY time(10s), host fill(none)`,
+			err:  `cannot use type string in argument to mean`,
+		},
+		{
+			name: "Mean_Boolean",
+			s:    `SELECT mean(value) FROM cpu WHERE time >= '1970-01-01T00:00:00Z' AND time < '1970-01-02T00:00:00Z' GROUP BY time(10s), host fill(none)`,
+			err:  `cannot use type boolean in argument to mean`,
+		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			stmt, err := influxql.ParseStatement(tt.s)
@@ -754,7 +827,14 @@ func TestSelect(t *testing.T) {
 
 			fields, _, err := c.Select(linker)
 			if err != nil {
-				t.Fatalf("unable to link statement: %s", err)
+				if tt.err == "" {
+					t.Fatalf("unable to link statement: %s", err)
+				} else if tt.err != err.Error() {
+					t.Fatalf("unexpected error: have=%s want=%s", err, tt.err)
+				}
+				return
+			} else if tt.err != "" {
+				t.Fatal("expected error")
 			}
 
 			plan := query.NewPlan()
