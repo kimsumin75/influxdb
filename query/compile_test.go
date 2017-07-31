@@ -11,6 +11,9 @@ import (
 	"github.com/influxdata/influxdb/services/meta"
 )
 
+// Second represents a helper for type converting durations.
+const Second = int64(time.Second)
+
 func TestCompile_Success(t *testing.T) {
 	for _, tt := range []string{
 		`SELECT time, value FROM cpu`,
@@ -554,6 +557,126 @@ func TestParseCondition(t *testing.T) {
 			}
 			if have, want := timeRange.Max, tt.max; !have.Equal(want) {
 				t.Errorf("unexpected max time:\nhave=%s\nwant=%s", have, want)
+			}
+		})
+	}
+}
+
+func TestSelect(t *testing.T) {
+	mustParseTime := func(value string) time.Time {
+		ts, err := time.Parse(time.RFC3339, value)
+		if err != nil {
+			t.Fatalf("unable to parse time: %s", err)
+		}
+		return ts
+	}
+	now := mustParseTime("2000-01-01T00:00:00Z")
+
+	for _, tt := range []struct {
+		name   string
+		s      string
+		expr   string
+		itrs   []influxql.Iterator
+		points [][]influxql.Point
+	}{
+		{
+			name: "Min",
+			s:    `SELECT min(value) FROM cpu WHERE time >= '1970-01-01T00:00:00Z' AND time < '1970-01-02T00:00:00Z' GROUP BY time(10s), host fill(none)`,
+			expr: `value`,
+			itrs: []influxql.Iterator{
+				&mock.FloatIterator{Points: []influxql.FloatPoint{
+					{Name: "cpu", Tags: mock.ParseTags("region=west,host=A"), Time: 0 * Second, Value: 20},
+					{Name: "cpu", Tags: mock.ParseTags("region=west,host=A"), Time: 11 * Second, Value: 3},
+					{Name: "cpu", Tags: mock.ParseTags("region=west,host=A"), Time: 31 * Second, Value: 100},
+				}},
+				&mock.FloatIterator{Points: []influxql.FloatPoint{
+					{Name: "cpu", Tags: mock.ParseTags("region=east,host=A"), Time: 9 * Second, Value: 19},
+					{Name: "cpu", Tags: mock.ParseTags("region=east,host=A"), Time: 10 * Second, Value: 2},
+				}},
+				&mock.FloatIterator{Points: []influxql.FloatPoint{
+					{Name: "cpu", Tags: mock.ParseTags("region=west,host=B"), Time: 5 * Second, Value: 10},
+				}},
+			},
+			points: [][]influxql.Point{
+				{&influxql.FloatPoint{Name: "cpu", Tags: mock.ParseTags("host=A"), Time: 0 * Second, Value: 19, Aggregated: 2}},
+				{&influxql.FloatPoint{Name: "cpu", Tags: mock.ParseTags("host=A"), Time: 10 * Second, Value: 2, Aggregated: 2}},
+				{&influxql.FloatPoint{Name: "cpu", Tags: mock.ParseTags("host=A"), Time: 30 * Second, Value: 100, Aggregated: 1}},
+				{&influxql.FloatPoint{Name: "cpu", Tags: mock.ParseTags("host=B"), Time: 0 * Second, Value: 10, Aggregated: 1}},
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			stmt, err := influxql.ParseStatement(tt.s)
+			if err != nil {
+				t.Fatalf("unable to parse statement: %s", err)
+			}
+
+			opt := query.CompileOptions{Now: now}
+			c, err := query.Compile(stmt.(*influxql.SelectStatement), opt)
+			if err != nil {
+				t.Fatalf("unable to compile statement: %s", err)
+			}
+
+			linker := mock.NewLinker(func(stub *mock.LinkerStub) {
+				stub.ShardsByTimeRangeFn = func(sources influxql.Sources, tmin, tmax time.Time) (a []meta.ShardInfo, err error) {
+					return []meta.ShardInfo{{ID: 1}}, nil
+				}
+				stub.ShardGroupFn = func(ids []uint64) query.ShardGroup {
+					if diff := cmp.Diff(ids, []uint64{1}); diff != "" {
+						t.Fatalf("unexpected shard ids:\n%s", diff)
+					}
+					return &mock.ShardGroup{
+						Measurements: map[string]mock.ShardMeta{
+							"cpu": {
+								Fields: map[string]influxql.DataType{
+									"field1": influxql.Float,
+									"field2": influxql.Float,
+								},
+							},
+						},
+						CreateIteratorFn: func(name string, opt influxql.IteratorOptions) (influxql.Iterator, error) {
+							if name != "cpu" {
+								t.Fatalf("unexpected source: %s", err)
+							}
+							if diff := cmp.Diff(opt.Expr, influxql.MustParseExpr(tt.expr)); diff != "" {
+								t.Fatalf("unexpected expr:\n%s", diff)
+							}
+							return influxql.Iterators(tt.itrs).Merge(opt)
+						},
+					}
+				}
+			})
+
+			fields, _, err := c.Select(linker)
+			if err != nil {
+				t.Fatalf("unable to link statement: %s", err)
+			}
+
+			plan := query.NewPlan()
+			for _, f := range fields {
+				plan.AddTarget(f)
+			}
+
+			for {
+				n := plan.FindWork()
+				if n == nil {
+					break
+				}
+				if err := n.Execute(); err != nil {
+					t.Fatalf("error while executing the plan: %s", err)
+				}
+				plan.NodeFinished(n)
+			}
+
+			itrs := make([]influxql.Iterator, len(fields))
+			for i, f := range fields {
+				itrs[i] = f.Iterator()
+			}
+
+			if a, err := mock.Iterators(itrs).ReadAll(); err != nil {
+				t.Fatalf("unexpected error: %s", err)
+			} else if diff := cmp.Diff(tt.points, a); diff != "" {
+				t.Fatalf("unexpected points:\n%s", diff)
 			}
 		})
 	}

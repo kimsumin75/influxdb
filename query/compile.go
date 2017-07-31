@@ -11,10 +11,12 @@ import (
 	"github.com/influxdata/influxdb/influxql"
 )
 
+// CompileOptions are the customization options for the compiler.
 type CompileOptions struct {
+	// Now is the current time when parsing time expressions.
 	Now time.Time
 
-	// Select statement limits.
+	// MaxSelectBucketsN is the maximum number of buckets in a grouping interval.
 	MaxSelectBucketsN int
 }
 
@@ -204,18 +206,18 @@ func (c *compiledField) compileExpr(expr influxql.Expr, out *WriteEdge) error {
 		} else {
 			// Construct a binary expression and an input edge for each side.
 			node := &BinaryExpr{Op: expr.Op, Output: out}
-			out.Node = node
+			node.Output = out.Attach(node)
 
 			// Process the left side.
 			var lhs *WriteEdge
-			lhs, node.LHS = AddEdge(nil, node)
+			lhs, node.LHS = NewReadEdge(node)
 			if err := c.compileExpr(expr.LHS, lhs); err != nil {
 				return err
 			}
 
 			// Process the right side.
 			var rhs *WriteEdge
-			rhs, node.RHS = AddEdge(nil, node)
+			rhs, node.RHS = NewReadEdge(node)
 			if err := c.compileExpr(expr.RHS, rhs); err != nil {
 				return err
 			}
@@ -253,8 +255,10 @@ func (c *compiledField) compileFunction(expr *influxql.Call, out *WriteEdge) err
 		call := &FunctionCall{
 			Name:       expr.Name,
 			Dimensions: c.global.Dimensions,
+			GroupBy:    c.global.Tags,
 			Interval:   c.global.Interval,
 			TimeRange:  c.global.TimeRange,
+			Ascending:  c.global.Ascending,
 			Output:     out,
 		}
 		out.Node = call
@@ -485,8 +489,7 @@ func (c *compiledField) compileCumulativeSum(args []influxql.Expr, out *WriteEdg
 
 	c.global.FunctionCalls = append(c.global.FunctionCalls, out.Output)
 	cs := &CumulativeSum{Output: out}
-	out.Node = cs
-	out, cs.Input = AddEdge(nil, cs)
+	out, cs.Input = out.Chain(cs)
 	c.global.OnlySelectors = false
 
 	// Must be a variable reference, function, wildcard, or regexp.
@@ -525,8 +528,7 @@ func (c *compiledField) compileMovingAverage(args []influxql.Expr, out *WriteEdg
 		WindowSize: windowSize,
 		Output:     out,
 	}
-	out.Node = m
-	out, m.Input = AddEdge(nil, m)
+	out, m.Input = out.Chain(m)
 	c.global.OnlySelectors = false
 
 	// Must be a variable reference, function, wildcard, or regexp.
@@ -567,8 +569,7 @@ func (c *compiledField) compileIntegral(args []influxql.Expr, out *WriteEdge) er
 		Duration: dur,
 		Output:   out,
 	}
-	out.Node = i
-	out, i.Input = AddEdge(nil, i)
+	out, i.Input = out.Chain(i)
 	c.global.OnlySelectors = false
 
 	// Must be a variable reference, wildcard, or regexp.
@@ -606,8 +607,7 @@ func (c *compiledField) compileHoltWinters(args []influxql.Expr, withFit bool, o
 		WithFit: withFit,
 		Output:  out,
 	}
-	out.Node = hw
-	out, hw.Input = AddEdge(nil, hw)
+	out, hw.Input = out.Chain(hw)
 	c.global.OnlySelectors = false
 
 	call, ok := args[0].(*influxql.Call)
@@ -652,8 +652,7 @@ func (c *compiledField) compileDistinct(args []influxql.Expr, out *WriteEdge, ne
 		// Add as a function call if this is not nested.
 		c.global.FunctionCalls = append(c.global.FunctionCalls, out.Output)
 	}
-	out.Node = d
-	out, d.Input = AddEdge(nil, d)
+	out, d.Input = out.Chain(d)
 	c.global.HasDistinct = true
 
 	// Add the variable reference to the graph to complete the graph.
@@ -693,7 +692,7 @@ func (c *compiledField) compileTopBottom(call *influxql.Call, out *WriteEdge) er
 			}
 
 			// Add a field for each of the listed dimensions.
-			in, out := NewEdge(nil)
+			in, out := NewEdge()
 			field := &compiledField{
 				global: c.global,
 				Field:  &influxql.Field{Expr: ref},
@@ -717,8 +716,7 @@ func (c *compiledField) compileTopBottom(call *influxql.Call, out *WriteEdge) er
 		Output:    out,
 	}
 	c.global.FunctionCalls = append(c.global.FunctionCalls, out.Output)
-	out.Node = selector
-	out, selector.Input = AddEdge(nil, selector)
+	out, selector.Input = out.Chain(selector)
 
 	// If we are grouping by some dimension, create a min/max call iterator
 	// with those dimensions.
@@ -729,7 +727,6 @@ func (c *compiledField) compileTopBottom(call *influxql.Call, out *WriteEdge) er
 			TimeRange:  c.global.TimeRange,
 			Output:     out,
 		}
-		out.Node = fcall
 
 		if call.Name == "top" {
 			fcall.Name = "max"
@@ -744,8 +741,7 @@ func (c *compiledField) compileTopBottom(call *influxql.Call, out *WriteEdge) er
 		for _, d := range c.global.Dimensions {
 			fcall.GroupBy[d] = struct{}{}
 		}
-
-		out, fcall.Input = AddEdge(nil, fcall)
+		out, fcall.Input = out.Chain(fcall)
 	}
 	return c.compileVarRef(ref, out)
 }
@@ -987,7 +983,7 @@ func (c *compiledStatement) compileFields(stmt *influxql.SelectStatement) error 
 			continue
 		}
 
-		in, out := NewEdge(nil)
+		in, out := NewEdge()
 		field := &compiledField{
 			global: c,
 			Field:  f,

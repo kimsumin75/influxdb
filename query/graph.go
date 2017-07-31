@@ -56,6 +56,21 @@ func (e *WriteEdge) Insert(n Node) (*ReadEdge, *WriteEdge) {
 	return e.Output, in
 }
 
+// Attach attaches this WriteEdge to a Node and returns the WriteEdge so it
+// can be assigned to the Node's output.
+func (e *WriteEdge) Attach(n Node) *WriteEdge {
+	e.Node = n
+	return e
+}
+
+// Chain attaches this Node to the WriteEdge and creates a new ReadEdge that
+// is attached to the same node. It returns a new WriteEdge to replace
+// the one.
+func (e *WriteEdge) Chain(n Node) (*WriteEdge, *ReadEdge) {
+	e.Node = n
+	return AddEdge(nil, n)
+}
+
 // ReadEdge is the end of the edge that reads from the Iterator.
 type ReadEdge struct {
 	// Node is the node that will read the Iterator from this edge.
@@ -105,17 +120,20 @@ func (e *ReadEdge) Insert(n Node) (*ReadEdge, *WriteEdge) {
 	return out, e.Input
 }
 
-// Append sets the Node for the current output edge and then creates a new Edge
-// that points to nothing.
-func (e *ReadEdge) Append(out Node) (*WriteEdge, *ReadEdge) {
-	e.Node = out
-	return NewEdge(out)
+// NewEdge creates a new edge where both sides are unattached.
+func NewEdge() (*WriteEdge, *ReadEdge) {
+	input := &WriteEdge{}
+	output := &ReadEdge{}
+	input.Output, output.Input = output, input
+	return input, output
 }
 
-// NewEdge creates a new edge with the input node set to the argument and the
-// output node set to nothing.
-func NewEdge(in Node) (*WriteEdge, *ReadEdge) {
-	return AddEdge(in, nil)
+// NewReadEdge creates a new edge with the ReadEdge attached to the Node
+// and an unattached WriteEdge.
+func NewReadEdge(n Node) (*WriteEdge, *ReadEdge) {
+	input, output := NewEdge()
+	output.Node = n
+	return input, output
 }
 
 // AddEdge creates a new edge between two nodes.
@@ -177,6 +195,8 @@ type IteratorCreator struct {
 	Database        Database
 	Dimensions      []string
 	Tags            map[string]struct{}
+	Interval        influxql.Interval
+	Ordered         bool
 	TimeRange       TimeRange
 	Ascending       bool
 	Output          *WriteEdge
@@ -215,6 +235,8 @@ func (ic *IteratorCreator) Execute() error {
 		Expr:       ic.Expr,
 		Dimensions: ic.Dimensions,
 		GroupBy:    ic.Tags,
+		Interval:   ic.Interval,
+		Ordered:    ic.Ordered,
 		Aux:        auxFields,
 		StartTime:  ic.TimeRange.Min.UnixNano(),
 		EndTime:    ic.TimeRange.Max.UnixNano(),
@@ -311,6 +333,7 @@ func (m *Merge) Optimize() {
 				GroupBy:    node.GroupBy,
 				Interval:   node.Interval,
 				TimeRange:  node.TimeRange,
+				Ascending:  node.Ascending,
 			}
 			call.Input, call.Output = input.Insert(call)
 		}
@@ -330,6 +353,7 @@ type FunctionCall struct {
 	GroupBy    map[string]struct{}
 	Interval   influxql.Interval
 	TimeRange  TimeRange
+	Ascending  bool
 	Input      *ReadEdge
 	Output     *WriteEdge
 }
@@ -356,6 +380,7 @@ func (c *FunctionCall) Execute() error {
 		Interval:   c.Interval,
 		StartTime:  c.TimeRange.Min.UnixNano(),
 		EndTime:    c.TimeRange.Max.UnixNano(),
+		Ascending:  c.Ascending,
 	}
 	itr, err := influxql.NewCallIterator(input, opt)
 	if err != nil {

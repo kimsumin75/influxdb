@@ -70,6 +70,7 @@ func (s *storageEngine) resolve(ref *influxql.VarRef, out *WriteEdge) {
 		Database:        s.shard,
 		Dimensions:      s.stmt.Dimensions,
 		Tags:            s.stmt.Tags,
+		Interval:        s.stmt.Interval,
 		TimeRange:       s.stmt.TimeRange,
 		Ascending:       s.stmt.Ascending,
 		Output:          out,
