@@ -576,6 +576,7 @@ func TestSelect(t *testing.T) {
 		name   string
 		s      string
 		expr   string
+		typ    influxql.DataType
 		itrs   []influxql.Iterator
 		points [][]influxql.Point
 		err    string
@@ -584,6 +585,7 @@ func TestSelect(t *testing.T) {
 			name: "Min",
 			s:    `SELECT min(value) FROM cpu WHERE time >= '1970-01-01T00:00:00Z' AND time < '1970-01-02T00:00:00Z' GROUP BY time(10s), host fill(none)`,
 			expr: `value`,
+			typ:  influxql.Float,
 			itrs: []influxql.Iterator{
 				&mock.FloatIterator{Points: []influxql.FloatPoint{
 					{Name: "cpu", Tags: mock.ParseTags("region=west,host=A"), Time: 0 * Second, Value: 20},
@@ -609,6 +611,7 @@ func TestSelect(t *testing.T) {
 			name: "Distinct_Float",
 			s:    `SELECT distinct(value) FROM cpu WHERE time >= '1970-01-01T00:00:00Z' AND time < '1970-01-02T00:00:00Z' GROUP BY time(10s), host fill(none)`,
 			expr: `value`,
+			typ:  influxql.Float,
 			itrs: []influxql.Iterator{
 				&mock.FloatIterator{Points: []influxql.FloatPoint{
 					{Name: "cpu", Tags: mock.ParseTags("region=west,host=A"), Time: 0 * Second, Value: 20},
@@ -635,6 +638,7 @@ func TestSelect(t *testing.T) {
 			name: "Distinct_Integer",
 			s:    `SELECT distinct(value) FROM cpu WHERE time >= '1970-01-01T00:00:00Z' AND time < '1970-01-02T00:00:00Z' GROUP BY time(10s), host fill(none)`,
 			expr: `value`,
+			typ:  influxql.Integer,
 			itrs: []influxql.Iterator{
 				&mock.IntegerIterator{Points: []influxql.IntegerPoint{
 					{Name: "cpu", Tags: mock.ParseTags("region=west,host=A"), Time: 0 * Second, Value: 20},
@@ -661,6 +665,7 @@ func TestSelect(t *testing.T) {
 			name: "Distinct_String",
 			s:    `SELECT distinct(value) FROM cpu WHERE time >= '1970-01-01T00:00:00Z' AND time < '1970-01-02T00:00:00Z' GROUP BY time(10s), host fill(none)`,
 			expr: `value`,
+			typ:  influxql.String,
 			itrs: []influxql.Iterator{
 				&mock.StringIterator{Points: []influxql.StringPoint{
 					{Name: "cpu", Tags: mock.ParseTags("region=west,host=A"), Time: 0 * Second, Value: "a"},
@@ -687,6 +692,7 @@ func TestSelect(t *testing.T) {
 			name: "Distinct_Boolean",
 			s:    `SELECT distinct(value) FROM cpu WHERE time >= '1970-01-01T00:00:00Z' AND time < '1970-01-02T00:00:00Z' GROUP BY time(10s), host fill(none)`,
 			expr: `value`,
+			typ:  influxql.Boolean,
 			itrs: []influxql.Iterator{
 				&mock.BooleanIterator{Points: []influxql.BooleanPoint{
 					{Name: "cpu", Tags: mock.ParseTags("region=west,host=A"), Time: 0 * Second, Value: true},
@@ -714,6 +720,7 @@ func TestSelect(t *testing.T) {
 			name: "Mean_Float",
 			s:    `SELECT mean(value) FROM cpu WHERE time >= '1970-01-01T00:00:00Z' AND time < '1970-01-02T00:00:00Z' GROUP BY time(10s), host fill(none)`,
 			expr: `value`,
+			typ:  influxql.Float,
 			itrs: []influxql.Iterator{
 				&mock.FloatIterator{Points: []influxql.FloatPoint{
 					{Name: "cpu", Tags: mock.ParseTags("region=west,host=A"), Time: 0 * Second, Value: 20},
@@ -745,6 +752,7 @@ func TestSelect(t *testing.T) {
 			name: "Mean_Integer",
 			s:    `SELECT mean(value) FROM cpu WHERE time >= '1970-01-01T00:00:00Z' AND time < '1970-01-02T00:00:00Z' GROUP BY time(10s), host fill(none)`,
 			expr: `value`,
+			typ:  influxql.Integer,
 			itrs: []influxql.Iterator{
 				&mock.IntegerIterator{Points: []influxql.IntegerPoint{
 					{Name: "cpu", Tags: mock.ParseTags("region=west,host=A"), Time: 0 * Second, Value: 20},
@@ -775,11 +783,13 @@ func TestSelect(t *testing.T) {
 		{
 			name: "Mean_String",
 			s:    `SELECT mean(value) FROM cpu WHERE time >= '1970-01-01T00:00:00Z' AND time < '1970-01-02T00:00:00Z' GROUP BY time(10s), host fill(none)`,
+			typ:  influxql.String,
 			err:  `cannot use type string in argument to mean`,
 		},
 		{
 			name: "Mean_Boolean",
 			s:    `SELECT mean(value) FROM cpu WHERE time >= '1970-01-01T00:00:00Z' AND time < '1970-01-02T00:00:00Z' GROUP BY time(10s), host fill(none)`,
+			typ:  influxql.Boolean,
 			err:  `cannot use type boolean in argument to mean`,
 		},
 	} {
@@ -807,8 +817,7 @@ func TestSelect(t *testing.T) {
 						Measurements: map[string]mock.ShardMeta{
 							"cpu": {
 								Fields: map[string]influxql.DataType{
-									"field1": influxql.Float,
-									"field2": influxql.Float,
+									"value": tt.typ,
 								},
 							},
 						},

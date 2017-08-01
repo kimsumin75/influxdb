@@ -1313,6 +1313,20 @@ func (c *compiledStatement) link(m ShardMapper) ([]*compiledField, []string, err
 	}
 	c.linkAuxiliaryFields(storageEngines(sources))
 
+	// Verify the types of every field.
+	for _, f := range fields {
+		if err := Walk(f.Output.Input.Node, VisitorFunc(func(n Node) (bool, error) {
+			if n, ok := n.(RestrictedTypeInputNode); ok {
+				if err := n.ValidateInputTypes(); err != nil {
+					return false, err
+				}
+			}
+			return true, nil
+		})); err != nil {
+			return nil, nil, err
+		}
+	}
+
 	// Determine the names for each field.
 	columns := columnNames(fields, c.TimeFieldName)
 	return fields, columns, nil

@@ -172,6 +172,16 @@ type OptimizableNode interface {
 	Optimize()
 }
 
+// RestrictedTypeInputNode is implemented by Nodes that accept a restricted
+// set of type options.
+type RestrictedTypeInputNode interface {
+	Node
+
+	// ValidateInputTypes validates the inputs for this Node and
+	// returns an appropriate error if the input type is not valid.
+	ValidateInputTypes() error
+}
+
 // AllInputsReady determines if all of the input edges for a node are ready.
 func AllInputsReady(n Node) bool {
 	inputs := n.Inputs()
@@ -402,6 +412,22 @@ func (c *FunctionCall) Type() influxql.DataType {
 		}
 		return influxql.Unknown
 	}
+}
+
+func (c *FunctionCall) ValidateInputTypes() error {
+	n := c.Input.Input.Node
+	if n == nil {
+		return nil
+	}
+
+	typ := n.Type()
+	switch c.Name {
+	case "min", "max", "sum", "mean":
+		if typ != influxql.Float && typ != influxql.Integer {
+			return fmt.Errorf("cannot use type %s in argument to %s", typ, c.Name)
+		}
+	}
+	return nil
 }
 
 type Median struct {
