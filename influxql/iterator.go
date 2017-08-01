@@ -356,7 +356,7 @@ func NewIntervalIterator(input Iterator, opt IteratorOptions) Iterator {
 	case BooleanIterator:
 		return newBooleanIntervalIterator(input, opt)
 	default:
-		panic(fmt.Sprintf("unsupported fill iterator type: %T", input))
+		panic(fmt.Sprintf("unsupported interval iterator type: %T", input))
 	}
 }
 
@@ -1020,6 +1020,8 @@ type nilFloatIterator struct{}
 func (*nilFloatIterator) Stats() IteratorStats       { return IteratorStats{} }
 func (*nilFloatIterator) Close() error               { return nil }
 func (*nilFloatIterator) Next() (*FloatPoint, error) { return nil, nil }
+
+var NilIterator Iterator = (*nilFloatIterator)(nil)
 
 // integerFloatTransformIterator executes a function to modify an existing point for every
 // output of the input iterator.

@@ -1033,7 +1033,7 @@ func (c *compiledStatement) compileFields(stmt *influxql.SelectStatement) error 
 	// that may exist. This does not apply if we are using top() or bottom().
 	if c.Interval.IsZero() && c.OnlySelectors && len(c.FunctionCalls) == 1 && c.TopBottomFunction == "" {
 		for _, f := range c.Fields {
-			if err := Walk(f.Output.Node, VisitorFunc(func(n Node) (bool, error) {
+			if err := Walk(f.Output.Input.Node, VisitorFunc(func(n Node) (bool, error) {
 				switch n := n.(type) {
 				case *Interval:
 					n.Output.Output.Input, n.Input.Input.Output = n.Input.Input, n.Output.Output

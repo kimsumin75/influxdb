@@ -8,6 +8,8 @@ import (
 	"sync"
 	"time"
 
+	"sort"
+
 	"github.com/influxdata/influxdb/influxql"
 )
 
@@ -223,8 +225,20 @@ func (ic *IteratorCreator) Description() string {
 		for _, name := range ic.AuxiliaryFields.Aux {
 			names = append(names, name.String())
 		}
-		fmt.Fprintf(&buf, " [%s]", strings.Join(names, ", "))
+		fmt.Fprintf(&buf, " [aux: %s]", strings.Join(names, ", "))
 	}
+	if ic.Tags != nil {
+		tags := make([]string, 0, len(ic.Tags))
+		for d := range ic.Tags {
+			tags = append(tags, d)
+		}
+		sort.Strings(tags)
+		fmt.Fprintf(&buf, " group by %s", strings.Join(tags, ", "))
+	}
+	if !ic.Interval.IsZero() {
+		fmt.Fprintf(&buf, " interval(%s)", ic.Interval.Duration)
+	}
+	fmt.Fprintf(&buf, " from %s to %s", ic.TimeRange.Min, ic.TimeRange.Max)
 	return buf.String()
 }
 
@@ -369,7 +383,17 @@ type FunctionCall struct {
 }
 
 func (c *FunctionCall) Description() string {
-	return fmt.Sprintf("%s()", c.Name)
+	var buf bytes.Buffer
+	fmt.Fprintf(&buf, "%s()", c.Name)
+	if len(c.GroupBy) > 0 {
+		tags := make([]string, 0, len(c.GroupBy))
+		for d := range c.GroupBy {
+			tags = append(tags, d)
+		}
+		sort.Strings(tags)
+		fmt.Fprintf(&buf, " group by %s", strings.Join(tags, ", "))
+	}
+	return buf.String()
 }
 
 func (c *FunctionCall) Inputs() []*ReadEdge   { return []*ReadEdge{c.Input} }
@@ -421,6 +445,10 @@ func (c *FunctionCall) ValidateInputTypes() error {
 	}
 
 	typ := n.Type()
+	if typ == influxql.Unknown {
+		return nil
+	}
+
 	switch c.Name {
 	case "min", "max", "sum", "mean":
 		if typ != influxql.Float && typ != influxql.Integer {
@@ -481,7 +509,9 @@ func (m *Median) ValidateInputTypes() error {
 	}
 
 	typ := n.Type()
-	if typ != influxql.Float && typ != influxql.Integer {
+	if typ == influxql.Unknown {
+		return nil
+	} else if typ != influxql.Float && typ != influxql.Integer {
 		return fmt.Errorf("cannot use type %s in argument to median", typ)
 	}
 	return nil
@@ -1074,6 +1104,10 @@ func (i *Interval) Execute() error {
 	}
 
 	input := i.Input.Iterator()
+	if input == nil {
+		i.Output.SetIterator(nil)
+		return nil
+	}
 	i.Output.SetIterator(influxql.NewIntervalIterator(input, opt))
 	return nil
 }

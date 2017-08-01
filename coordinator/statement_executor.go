@@ -644,7 +644,11 @@ func (e *StatementExecutor) createIterators(stmt *influxql.SelectStatement, ctx 
 
 	itrs := make([]influxql.Iterator, len(outputs))
 	for i, out := range outputs {
-		itrs[i] = out.Iterator()
+		itr := out.Iterator()
+		if itr == nil {
+			itr = influxql.NilIterator
+		}
+		itrs[i] = itr
 	}
 
 	if e.MaxSelectPointN > 0 {
