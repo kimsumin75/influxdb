@@ -431,8 +431,13 @@ func (c *FunctionCall) ValidateInputTypes() error {
 }
 
 type Median struct {
-	Input  *ReadEdge
-	Output *WriteEdge
+	Dimensions []string
+	GroupBy    map[string]struct{}
+	Interval   influxql.Interval
+	TimeRange  TimeRange
+	Ascending  bool
+	Input      *ReadEdge
+	Output     *WriteEdge
 }
 
 func (m *Median) Description() string {
@@ -443,11 +448,43 @@ func (m *Median) Inputs() []*ReadEdge   { return []*ReadEdge{m.Input} }
 func (m *Median) Outputs() []*WriteEdge { return []*WriteEdge{m.Output} }
 
 func (m *Median) Execute() error {
-	return errors.New("unimplemented")
+	input := m.Input.Iterator()
+	if input == nil {
+		m.Output.SetIterator(input)
+		return nil
+	}
+
+	opt := influxql.IteratorOptions{
+		Dimensions: m.Dimensions,
+		GroupBy:    m.GroupBy,
+		Interval:   m.Interval,
+		StartTime:  m.TimeRange.Min.UnixNano(),
+		EndTime:    m.TimeRange.Max.UnixNano(),
+		Ascending:  m.Ascending,
+	}
+	itr, err := influxql.NewMedianIterator(input, opt)
+	if err != nil {
+		return err
+	}
+	m.Output.SetIterator(itr)
+	return nil
 }
 
 func (m *Median) Type() influxql.DataType {
 	return influxql.Float
+}
+
+func (m *Median) ValidateInputTypes() error {
+	n := m.Input.Input.Node
+	if n == nil {
+		return nil
+	}
+
+	typ := n.Type()
+	if typ != influxql.Float && typ != influxql.Integer {
+		return fmt.Errorf("cannot use type %s in argument to median", typ)
+	}
+	return nil
 }
 
 type Mode struct {

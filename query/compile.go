@@ -274,9 +274,15 @@ func (c *compiledField) compileFunction(expr *influxql.Call, out *WriteEdge) err
 		out.Node = call
 		out, call.Input = AddEdge(nil, call)
 	case "median":
-		median := &Median{Output: out}
-		out.Node = median
-		out, median.Input = AddEdge(nil, median)
+		median := &Median{
+			Dimensions: c.global.Dimensions,
+			GroupBy:    c.global.Tags,
+			Interval:   c.global.Interval,
+			TimeRange:  c.global.TimeRange,
+			Ascending:  c.global.Ascending,
+			Output:     out,
+		}
+		out, median.Input = out.Chain(median)
 	case "mode":
 		mode := &Mode{Output: out}
 		out.Node = mode
