@@ -1153,27 +1153,6 @@ func matchExactRegex(v string) (string, bool) {
 	return "", true
 }
 
-// FieldExprByName returns the expression that matches the field name and the
-// index where this was found. If the name matches one of the arguments to
-// "top" or "bottom", the variable reference inside of the function is returned
-// and the index is of the function call rather than the variable reference.
-// If no expression is found, -1 is returned for the index and the expression
-// will be nil.
-func (s *SelectStatement) FieldExprByName(name string) (int, Expr) {
-	for i, f := range s.Fields {
-		if f.Name() == name {
-			return i, f.Expr
-		} else if call, ok := f.Expr.(*Call); ok && (call.Name == "top" || call.Name == "bottom") && len(call.Args) > 2 {
-			for _, arg := range call.Args[1 : len(call.Args)-1] {
-				if arg, ok := arg.(*VarRef); ok && arg.Val == name {
-					return i, arg
-				}
-			}
-		}
-	}
-	return -1, nil
-}
-
 // Reduce calls the Reduce function on the different components of the
 // SelectStatement to reduce the statement.
 func (s *SelectStatement) Reduce(valuer Valuer) *SelectStatement {
