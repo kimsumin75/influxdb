@@ -1195,7 +1195,9 @@ func (fn VisitorFunc) Visit(n Node) (ok bool, err error) {
 // If a node is referenced as the input from multiple edges, it may be
 // visited multiple times.
 func Walk(n Node, v Visitor) error {
-	if ok, err := v.Visit(n); err != nil {
+	if n == nil {
+		return nil
+	} else if ok, err := v.Visit(n); err != nil {
 		return err
 	} else if !ok {
 		return nil
